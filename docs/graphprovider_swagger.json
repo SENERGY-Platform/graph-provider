@@ -1,0 +1,151 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "graph-provider maintains one default energy-flow graph per Keycloak group, keeps it populated with every device the group has access to, and derives its structure from meter readings. This HTTP surface is cluster-internal and carries no authentication: it exists for an operator, or another cluster-internal service, to probe liveness, read status, and ask for a reconcile pass out of turn.",
+        "title": "graph-provider API",
+        "contact": {},
+        "license": {
+            "name": "Apache 2.0",
+            "url": "http://www.apache.org/licenses/LICENSE-2.0.html"
+        },
+        "version": "1.0"
+    },
+    "basePath": "/",
+    "paths": {
+        "/health": {
+            "get": {
+                "description": "always answers once the process is up; checks nothing downstream.",
+                "produces": [
+                    "text/plain"
+                ],
+                "tags": [
+                    "health"
+                ],
+                "summary": "liveness probe",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                }
+            }
+        },
+        "/info": {
+            "get": {
+                "description": "version, whether writing is enabled, whether the Kafka trigger consumers are alive, and queue and cache sizes.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "info"
+                ],
+                "summary": "service status",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.Status"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error"
+                    }
+                }
+            }
+        },
+        "/reconcile": {
+            "post": {
+                "description": "records the wish and returns immediately. Accepted, not OK: the pass touches four foreign systems and can take a while, and the loop carries it out separately - an operator waiting on this response would be waiting on a timeout.",
+                "produces": [
+                    "text/plain"
+                ],
+                "tags": [
+                    "reconcile"
+                ],
+                "summary": "request a full reconcile pass",
+                "responses": {
+                    "202": {
+                        "description": "Accepted"
+                    },
+                    "500": {
+                        "description": "Internal Server Error"
+                    }
+                }
+            }
+        },
+        "/reconcile/group": {
+            "post": {
+                "description": "records the wish and returns immediately, for the reason given at /reconcile.",
+                "produces": [
+                    "text/plain"
+                ],
+                "tags": [
+                    "reconcile"
+                ],
+                "summary": "request a reconcile pass for one group",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "full Keycloak group path, leading slash included, e.g. /acme/werk-nord",
+                        "name": "path",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted"
+                    },
+                    "400": {
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "description": "Internal Server Error"
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "api.Status": {
+            "type": "object",
+            "properties": {
+                "devices": {
+                    "type": "integer"
+                },
+                "groups": {
+                    "type": "integer"
+                },
+                "kafka_alive": {
+                    "description": "KafkaAlive is false once a trigger consumer has ended. Nothing restarts\nit, so from then on only the interval sweep still finds work - the\ndifference between a healthy service and a degraded one that answers\nevery probe.",
+                    "type": "boolean"
+                },
+                "mem_alloc": {
+                    "type": "string"
+                },
+                "mem_alloc_b": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "pending": {
+                    "description": "Pending is how much work is queued.",
+                    "type": "integer"
+                },
+                "up_time": {
+                    "type": "string"
+                },
+                "up_time_ns": {
+                    "type": "integer"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "writable": {
+                    "description": "Writable is false when the kill switch is set: everything runs, nothing\nis written. Worth knowing before wondering why no graph appears.",
+                    "type": "boolean"
+                }
+            }
+        }
+    }
+}

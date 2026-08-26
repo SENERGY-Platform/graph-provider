@@ -1,0 +1,117 @@
+# Copyright (c) 2026 InfAI (CC SES)
+#
+# The quality gates, as the thing that actually blocks.
+#
+# .claude/gates.env configures them and the local runner executes them, but a
+# gate is only binding where a failure stops a merge - which means a step here,
+# on pull_request. Every gate that file sets to enforce has a step below, named
+# after it, running the same command the runner runs.
+#
+# There is no push trigger. On main and master this workflow runs as a called
+# workflow of prod.yml, which the image build depends on - so the gates decide
+# whether a release happens at all, rather than reporting next to one. A push
+# trigger here as well would run every gate twice for the same commit.
+name: Gates
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Full history: coverage_delta measures the lines this branch changed
+      # against a base ref, and a shallow clone has neither.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      # Not a gate, but the Dockerfile runs it, so a broken generator would
+      # otherwise surface at image build rather than in review. The output is
+      # gitignored; this only proves it still generates.
+      - name: swagger docs generate
+        run: |
+          go generate ./...
+          test -s docs/graphprovider_swagger.json
+
+      # gate: format
+      - name: format - gofmt
+        run: |
+          out="$(gofmt -l . | grep -v '^vendor/' || true)"
+          if [ -n "$out" ]; then
+            echo "gofmt would reformat:"; echo "$out"; exit 1
+          fi
+
+      # gate: lint. go vet rather than staticcheck, for the reason in
+      # .claude/gates.env - staticcheck 2025.1.1 cannot analyse a go1.26 module.
+      - name: lint - go vet
+        run: go vet ./...
+
+      # gate: typecheck. For Go the compiler is the strictest type check there
+      # is, so this is go build under another name.
+      - name: typecheck - go build
+        run: go build ./...
+
+      # gate: build
+      - name: build
+        run: go build -v ./...
+
+      # gate: test. With -race, which the local runner does not do by default -
+      # CI is where the extra minutes are affordable.
+      - name: test - go test -race
+        run: go test -race -count=1 ./...
+
+      # gate: vulns. The wrapper implements the catalog's criterion: a finding
+      # with an available fix blocks, a finding nobody can act on is reported.
+      - name: vulns - govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          bash scripts/vulns.sh
+
+      # gate: deps_license
+      - name: deps_license - licence of every module in the build
+        run: bash scripts/deps-license.sh
+
+      # gate: coverage_delta. On a pull request the base is the branch being
+      # merged into; on a push to the default branch there is nothing to
+      # compare and the script says so.
+      - name: coverage_delta - changed lines vs repository average
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+        run: bash scripts/coverage-delta.sh
+
+      # gate: secrets. Pinned rather than @latest: a scanner that changes its
+      # rules under you turns a green history red for no change of ours.
+      - name: secrets - gitleaks
+        run: |
+          version=8.30.1
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
+          tar xzf gitleaks.tar.gz gitleaks
+          ./gitleaks dir . --no-banner --redact --exit-code 1
+
+  # Separate job: this one needs Docker and takes longer, and it is the only
+  # suite that talks to a real device-repository and a real permissions-v2.
+  # It found that the repository's attributes filter is AND where its own
+  # documentation says ANY - a finding that only stays found if this runs.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: integration suite
+        run: go test -tags integration -count=1 -timeout 900s ./pkg/tests/

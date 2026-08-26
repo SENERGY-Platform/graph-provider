@@ -1,0 +1,53 @@
+{
+  "server_port": 8080,
+  "logger": {
+    "handler": "json",
+    "level": "info",
+    "time_format": "2006-01-02T15:04:05.999999999Z07:00",
+    "time_utc": true,
+    "add_meta": true
+  },
+
+  "device_repository_url": "",
+  "permissions_v2_url": "",
+  "timescale_wrapper_url": "",
+
+  "kafka": {
+    "url": "",
+    "consumer_group": "graph-provider",
+    "device_topic": "devices",
+    "device_type_topic": "device-types",
+    "graph_topic": "graphs"
+  },
+
+  "keycloak": {
+    "url": "",
+    "realm": "master",
+    "client_id": "",
+    "client_secret": "",
+    "page_size": 100
+  },
+
+  "heuristic": {
+    "reference_window": "720h",
+    "containment_tolerance": 0.05,
+    "reading_ttl": "24h",
+    "no_flow_node_name": "Ohne Energiefluss"
+  },
+
+  "permissions_device_topic": "devices",
+  "permissions_graph_topic": "graphs",
+
+  "service_user_id": "",
+
+  "group_poll_interval": "5m",
+  "reconcile_interval": "1h",
+
+  "group_include": [],
+  "group_exclude": [],
+
+  "enabled": true,
+
+  "http_timeout": "30s",
+  "http_access_log": true
+}

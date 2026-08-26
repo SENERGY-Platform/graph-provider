@@ -1,0 +1,12 @@
+/graph-provider
+/app
+*.test
+/coverage.out
+/.idea/
+
+# Local run configuration: carries the Keycloak client secret.
+# .env.example is the committed template.
+/.env
+
+# Editor configuration: the gates task points at a machine-local plugin path.
+/.vscode/
