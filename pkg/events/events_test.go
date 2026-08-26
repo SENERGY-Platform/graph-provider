@@ -80,7 +80,7 @@ const rightsMessage = `{
 
 func TestHandleDevicePut(t *testing.T) {
 	pending := NewPending()
-	if err := handle(KindDevice, []byte(putDeviceMessage), pending); err != nil {
+	if _, err := handle(KindDevice, []byte(putDeviceMessage), pending); err != nil {
 		t.Fatalf("handle() error = %v, want nil", err)
 	}
 	assertOnlyPending(t, pending, Trigger{Kind: KindDevice, Id: deviceId})
@@ -88,7 +88,7 @@ func TestHandleDevicePut(t *testing.T) {
 
 func TestHandleDeviceDelete(t *testing.T) {
 	pending := NewPending()
-	if err := handle(KindDevice, []byte(deleteDeviceMessage), pending); err != nil {
+	if _, err := handle(KindDevice, []byte(deleteDeviceMessage), pending); err != nil {
 		t.Fatalf("handle() error = %v, want nil", err)
 	}
 	assertOnlyPending(t, pending, Trigger{Kind: KindDevice, Id: deviceId})
@@ -96,7 +96,7 @@ func TestHandleDeviceDelete(t *testing.T) {
 
 func TestHandleRights(t *testing.T) {
 	pending := NewPending()
-	if err := handle(KindDevice, []byte(rightsMessage), pending); err != nil {
+	if _, err := handle(KindDevice, []byte(rightsMessage), pending); err != nil {
 		t.Fatalf("handle() error = %v, want nil", err)
 	}
 	assertOnlyPending(t, pending, Trigger{Kind: KindDevice, Id: deviceId})
@@ -105,7 +105,7 @@ func TestHandleRights(t *testing.T) {
 func TestHandleDeviceType(t *testing.T) {
 	pending := NewPending()
 	message := `{"command": "PUT", "id": "urn:infai:ses:device-type:22222222-2222-2222-2222-222222222222"}`
-	if err := handle(KindDeviceType, []byte(message), pending); err != nil {
+	if _, err := handle(KindDeviceType, []byte(message), pending); err != nil {
 		t.Fatalf("handle() error = %v, want nil", err)
 	}
 	assertOnlyPending(t, pending, Trigger{
@@ -117,7 +117,7 @@ func TestHandleDeviceType(t *testing.T) {
 func TestHandleGraph(t *testing.T) {
 	pending := NewPending()
 	message := `{"command": "PUT", "id": "graph-1"}`
-	if err := handle(KindGraph, []byte(message), pending); err != nil {
+	if _, err := handle(KindGraph, []byte(message), pending); err != nil {
 		t.Fatalf("handle() error = %v, want nil", err)
 	}
 	assertOnlyPending(t, pending, Trigger{Kind: KindGraph, Id: "graph-1"})
@@ -125,7 +125,7 @@ func TestHandleGraph(t *testing.T) {
 
 func TestHandleGarbageBytes(t *testing.T) {
 	pending := NewPending()
-	err := handle(KindDevice, []byte("not json at all"), pending)
+	_, err := handle(KindDevice, []byte("not json at all"), pending)
 	if err == nil {
 		t.Fatal("handle() error = nil, want an error for non-JSON input")
 	}
@@ -136,7 +136,7 @@ func TestHandleGarbageBytes(t *testing.T) {
 
 func TestHandleEmptyId(t *testing.T) {
 	pending := NewPending()
-	err := handle(KindDevice, []byte(`{"command": "PUT", "id": ""}`), pending)
+	_, err := handle(KindDevice, []byte(`{"command": "PUT", "id": ""}`), pending)
 	if err == nil {
 		t.Fatal("handle() error = nil, want an error for an empty id")
 	}
@@ -147,7 +147,7 @@ func TestHandleEmptyId(t *testing.T) {
 
 func TestHandleMissingIdField(t *testing.T) {
 	pending := NewPending()
-	err := handle(KindDevice, []byte(`{"command": "PUT"}`), pending)
+	_, err := handle(KindDevice, []byte(`{"command": "PUT"}`), pending)
 	if err == nil {
 		t.Fatal("handle() error = nil, want an error when id is absent entirely")
 	}
@@ -194,12 +194,18 @@ func assertOnlyPending(t *testing.T, pending *Pending, want Trigger) {
 // Handlers is that the two are never confused for one another.
 type recordingHandlers struct {
 	mu            sync.Mutex
+	deliveries    []Delivery
 	messageErrors []error
 	consumersLost []error
 }
 
 func (this *recordingHandlers) handlers() Handlers {
 	return Handlers{
+		OnDelivery: func(delivery Delivery) {
+			this.mu.Lock()
+			defer this.mu.Unlock()
+			this.deliveries = append(this.deliveries, delivery)
+		},
 		OnMessageError: func(err error) {
 			this.mu.Lock()
 			defer this.mu.Unlock()
@@ -217,6 +223,98 @@ func (this *recordingHandlers) counts() (messages int, lost int) {
 	this.mu.Lock()
 	defer this.mu.Unlock()
 	return len(this.messageErrors), len(this.consumersLost)
+}
+
+func (this *recordingHandlers) delivered() []Delivery {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	return append([]Delivery{}, this.deliveries...)
+}
+
+// Every record produces exactly one OnDelivery call, naming what it became.
+// The callback is what tells "nothing arrived" from "something arrived and
+// produced no work", so it has to fire for the records that produce no
+// trigger just as much as for the ones that do.
+func TestDeliveryIsReportedForEveryRecord(t *testing.T) {
+	cases := []struct {
+		name  string
+		msg   kafka.Message
+		want  Delivery
+		wantH int // expected OnMessageError calls
+	}{
+		{
+			name: "a record that becomes a trigger",
+			msg: kafka.Message{
+				Topic: "devices", Partition: 2, Offset: 41,
+				Key: []byte(deviceId), Value: []byte(putDeviceMessage),
+			},
+			want: Delivery{
+				Topic: "devices", Partition: 2, Offset: 41, Key: deviceId,
+				Kind: KindDevice, Id: deviceId,
+			},
+		},
+		{
+			name: "a rights record, which is a trigger like any other",
+			msg: kafka.Message{
+				Topic: "devices", Partition: 0, Offset: 7,
+				Key: []byte(deviceId + "/rights"), Value: []byte(rightsMessage),
+			},
+			want: Delivery{
+				Topic: "devices", Partition: 0, Offset: 7, Key: deviceId + "/rights",
+				Kind: KindDevice, Id: deviceId,
+			},
+		},
+		{
+			name: "a record that cannot be decoded still arrived",
+			msg: kafka.Message{
+				Topic: "devices", Partition: 1, Offset: 3,
+				Key: []byte("whatever"), Value: []byte("not json at all"),
+			},
+			want: Delivery{
+				Topic: "devices", Partition: 1, Offset: 3, Key: "whatever",
+				Kind: KindDevice, Id: "",
+			},
+			wantH: 1,
+		},
+		{
+			name: "a record on a topic this service does not know",
+			msg: kafka.Message{
+				Topic: "something-else", Partition: 0, Offset: 1,
+				Value: []byte(putDeviceMessage),
+			},
+			want: Delivery{Topic: "something-else", Partition: 0, Offset: 1},
+		},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &recordingHandlers{}
+			listener := newListener(map[string]Kind{"devices": KindDevice}, NewPending(), recorder.handlers())
+
+			if err := listener(test.msg); err != nil {
+				t.Fatalf("listener() error = %v, want nil", err)
+			}
+			delivered := recorder.delivered()
+			if len(delivered) != 1 {
+				t.Fatalf("OnDelivery called %d times, want exactly 1 per record", len(delivered))
+			}
+			if delivered[0] != test.want {
+				t.Errorf("OnDelivery got %+v, want %+v", delivered[0], test.want)
+			}
+			if messages, _ := recorder.counts(); messages != test.wantH {
+				t.Errorf("OnMessageError called %d times, want %d", messages, test.wantH)
+			}
+		})
+	}
+}
+
+// Handlers is all-optional; a nil OnDelivery must not cost a panic on the
+// partition.
+func TestNilOnDeliveryIsOptional(t *testing.T) {
+	listener := newListener(map[string]Kind{"devices": KindDevice}, NewPending(), Handlers{})
+	if err := listener(kafka.Message{Topic: "devices", Value: []byte(putDeviceMessage)}); err != nil {
+		t.Fatalf("listener() error = %v, want nil", err)
+	}
 }
 
 func TestListenerAddsTrigger(t *testing.T) {

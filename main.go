@@ -199,6 +199,20 @@ func run() int {
 	// callback would skip the http shutdown and wg.Wait below.
 	consumerLost := make(chan struct{}, 1)
 	handlers := events.Handlers{
+		// Debug and not info: one line per record means the whole compacted
+		// history on the first run of a consumer group. It is off in normal
+		// operation and turned on to answer the one question the rest of the
+		// log cannot - whether a change to a device reached this service at
+		// all, and what it was read as.
+		OnDelivery: func(delivery events.Delivery) {
+			logger.Debug("kafka record received",
+				"topic", delivery.Topic,
+				"partition", delivery.Partition,
+				"offset", delivery.Offset,
+				"key", delivery.Key,
+				"kind", string(delivery.Kind),
+				"id", delivery.Id)
+		},
 		OnMessageError: func(err error) {
 			logger.Warn("kafka trigger dropped", "error", err)
 		},

@@ -211,6 +211,7 @@ func (this *Reconciler) Run(ctx context.Context, wg *sync.WaitGroup) {
 // asked of the authoritative source here, because a stream that keeps a few
 // days cannot be trusted to have told the whole story.
 func (this *Reconciler) resolve(ctx context.Context, triggers []events.Trigger) {
+	this.logger.Debug("resolving triggers", "triggers", len(triggers))
 	for _, trigger := range triggers {
 		if ctx.Err() != nil {
 			return
@@ -222,13 +223,27 @@ func (this *Reconciler) resolve(ctx context.Context, triggers []events.Trigger) 
 				this.logger.Warn("unable to refresh device", "device", trigger.Id, "error", err)
 				continue
 			}
-			for _, path := range change.AffectedGroups() {
+			// The groups, not just their number: an empty list is the outcome
+			// that looks like nothing happened, and it has two very different
+			// causes - a device the repository no longer returns, and one that
+			// is in no group at all. Exists tells them apart.
+			affected := change.AffectedGroups()
+			this.logger.Debug("device trigger resolved",
+				"device", trigger.Id,
+				"exists", change.Exists,
+				"previous groups", change.PreviousGroups,
+				"groups", change.Device.Groups,
+				"requested", affected)
+			for _, path := range affected {
 				this.RequestGroup(path)
 			}
 		case events.KindDeviceType:
 			// The trigger names a type, not the devices. Every device of that
 			// type may have gained or lost a column, so each is re-read.
-			for _, deviceId := range this.cache.DevicesOfDeviceType(trigger.Id) {
+			devices := this.cache.DevicesOfDeviceType(trigger.Id)
+			this.logger.Debug("device-type trigger resolved",
+				"device type", trigger.Id, "devices", len(devices))
+			for _, deviceId := range devices {
 				change, err := this.cache.RefreshDevice(ctx, deviceId)
 				if err != nil {
 					this.logger.Warn("unable to refresh device", "device", deviceId, "error", err)
@@ -246,6 +261,8 @@ func (this *Reconciler) resolve(ctx context.Context, triggers []events.Trigger) 
 				this.logger.Warn("unable to read graph", "graph", trigger.Id, "error", err)
 				continue
 			}
+			this.logger.Debug("graph trigger resolved",
+				"graph", trigger.Id, "found", found, "group", graphs.GroupPathOf(graph))
 			if !found {
 				// Deleted. Which group it belonged to was written on the graph,
 				// so with the graph gone the id says nothing - and there is no
@@ -294,11 +311,20 @@ func (this *Reconciler) drain(ctx context.Context) {
 			this.logger.Error("unable to list default graphs", "error", err)
 			return
 		}
+		this.logger.Debug("reconciling requested groups", "groups", paths)
 		for _, path := range paths {
 			if ctx.Err() != nil {
 				return
 			}
-			if err := this.safeGroup(ctx, path, existingFor(defaults, this.cache, path)); err != nil && !errors.Is(err, context.Canceled) {
+			existing := existingFor(defaults, this.cache, path)
+			// Said before the pass rather than after it. A pass that writes
+			// nothing logs nothing of its own, so without this a group that
+			// was reconciled and a group that was never reached are the same
+			// silence. The graph id also shows whether the group's existing
+			// graph was found at all - an empty one means the pass is about to
+			// create one.
+			this.logger.Debug("reconciling group", "group", path, "graph", existing.Id)
+			if err := this.safeGroup(ctx, path, existing); err != nil && !errors.Is(err, context.Canceled) {
 				this.logger.Error("unable to reconcile group", "group", path, "error", err)
 			}
 		}

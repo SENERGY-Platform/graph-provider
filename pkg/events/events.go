@@ -68,18 +68,19 @@ type triggerMessage struct {
 }
 
 // handle decodes one message and adds its trigger to pending, or reports why
-// it could not. It is unexported so tests can drive it with raw bytes
-// without a broker.
-func handle(kind Kind, value []byte, pending *Pending) error {
+// it could not. It returns the id it read so the caller can report what the
+// record became without decoding the body a second time. It is unexported so
+// tests can drive it with raw bytes without a broker.
+func handle(kind Kind, value []byte, pending *Pending) (string, error) {
 	var msg triggerMessage
 	if err := json.Unmarshal(value, &msg); err != nil {
-		return fmt.Errorf("events: %s message is not valid JSON: %w", kind, err)
+		return "", fmt.Errorf("events: %s message is not valid JSON: %w", kind, err)
 	}
 	if msg.Id == "" {
-		return fmt.Errorf("events: %s message has no id", kind)
+		return "", fmt.Errorf("events: %s message has no id", kind)
 	}
 	pending.Add(Trigger{Kind: kind, Id: msg.Id})
-	return nil
+	return msg.Id, nil
 }
 
 // topicKinds maps each configured topic name to the Kind a message on it
@@ -92,12 +93,43 @@ func topicKinds(cfg config.KafkaConfig) map[string]Kind {
 	}
 }
 
-// Handlers are the two failure kinds of the Kafka path, kept apart because
-// they are not the same event and must not be reported the same way.
+// Delivery is one record as it arrived, with what was made of it.
 //
-// The distinction is the whole point of this type: a bad record costs one
-// trigger, a lost consumer costs every trigger from then on.
+// It carries no part of the message body except the id, which is the only
+// field this package reads. Kind is empty when the record arrived on a topic
+// this service does not know, and Id is empty when the body carried none or
+// could not be decoded - both are reported here as well as through
+// OnMessageError, because the shape of the record is what tells them apart.
+type Delivery struct {
+	Topic     string
+	Partition int
+	Offset    int64
+	Key       string
+	Kind      Kind
+	Id        string
+}
+
+// Handlers is how this package reports what happened, so that nothing here
+// has to know about a logger.
+//
+// The two failure kinds are kept apart because they are not the same event and
+// must not be reported the same way: a bad record costs one trigger, a lost
+// consumer costs every trigger from then on.
 type Handlers struct {
+	// OnDelivery is called for every record the consumers hand over, before
+	// any of the two failure paths below.
+	//
+	// It exists for the one question the others cannot answer: whether
+	// anything arrived at all. A trigger that led to no graph change and a
+	// message that was never delivered look identical from outside the
+	// process, and they have entirely different causes - so the arrival is
+	// reported in its own right, whether or not it produced work.
+	//
+	// Called from the consuming goroutine, once per record, before the
+	// listener returns. Whatever it does is therefore paid for on the
+	// partition: it is meant for a log line and nothing more.
+	OnDelivery func(Delivery)
+
 	// OnMessageError is called for a record that could not be used. The
 	// record is skipped and consumption continues, so whatever id it named is
 	// picked up by the next safety-net pass instead. A warning at most.
@@ -163,16 +195,35 @@ func (this *Consumers) libraryOnError(ctx context.Context, handlers Handlers) fu
 // handle with raw bytes.
 func newListener(kinds map[string]Kind, pending *Pending, handlers Handlers) func(kafka.Message) error {
 	return func(delivery kafka.Message) error {
-		kind, ok := kinds[delivery.Topic]
-		if !ok {
+		kind, known := kinds[delivery.Topic]
+		record := Delivery{
+			Topic:     delivery.Topic,
+			Partition: delivery.Partition,
+			Offset:    delivery.Offset,
+			Key:       string(delivery.Key),
+			Kind:      kind,
+		}
+		// Reported even for a topic that is none of the three, and even for a
+		// record that decodes into nothing. An arrival nobody can see is the
+		// state that costs the most time to work out from the outside, so
+		// every record produces one call - the Kind and Id it carries say
+		// what became of it.
+		defer func() {
+			if handlers.OnDelivery != nil {
+				handlers.OnDelivery(record)
+			}
+		}()
+		if !known {
 			// Not one of the subscribed topics; NewMultiConsumer never calls
 			// this listener for anything else, so this is unreached in
 			// practice and only guards against a future change in topics.
 			return nil
 		}
-		if err := handle(kind, delivery.Value, pending); err != nil && handlers.OnMessageError != nil {
+		id, err := handle(kind, delivery.Value, pending)
+		if err != nil && handlers.OnMessageError != nil {
 			handlers.OnMessageError(err)
 		}
+		record.Id = id
 		// Always nil: the consumer retries a listener that returns an error
 		// for ten minutes and then reports it as the end of consumption,
 		// which would turn one malformed message into a dead partition. A bad
