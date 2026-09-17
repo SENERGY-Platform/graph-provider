@@ -850,23 +850,54 @@ func TestOneWindowForEveryDeviceOfAPass(t *testing.T) {
 
 // --- the group tree -----------------------------------------------------------
 
-// A group with no devices still gets its graph: SPEC.md promises one default
-// graph per group, not one per group that happens to own a meter.
-func TestGroupWithoutDevicesStillGetsAGraph(t *testing.T) {
+// A group with no devices gets no graph. A graph holding nothing but its root
+// says nothing, and most groups in a realm own no meter at all.
+func TestGroupWithoutDevicesGetsNoGraph(t *testing.T) {
 	h := newHarness(t)
-	h.world.setGroups("/leer")
+	h.world.setGroups("/leer", "/acme")
+	h.world.meter("d1", "Hauptzaehler", 1000, "/acme")
 
 	h.mustFull(t)
 
-	graph := h.graphOfGroup(t, "/leer")
-	if got := nodeIds(graph); !reflect.DeepEqual(got, []string{model.RootNodeId}) {
-		t.Errorf("expected the root and nothing else, got %v", got)
+	if _, exists := h.world.graphOfGroup("/leer"); exists {
+		t.Error("a group without devices must not get a graph")
 	}
-	if err := graph.Valid(); err != nil {
-		t.Errorf("an empty graph must still be valid: %v", err)
+	if got := h.world.countCalls("SetGraph"); got != 1 {
+		t.Errorf("expected only the group with a device written, got %v writes", got)
+	}
+	// Not a permanent verdict: the graph is created as soon as the group has
+	// something to put in it.
+	h.world.meter("d2", "Zaehler Leer", 700, "/leer")
+	h.mustFull(t)
+
+	graph := h.graphOfGroup(t, "/leer")
+	if got := nodeIds(graph); !reflect.DeepEqual(got, []string{"d2", model.RootNodeId}) {
+		t.Errorf("expected the root and the new device, got %v", got)
 	}
 	if _, shared := h.world.groupPermission(graph.Id, "/leer"); !shared {
-		t.Error("an empty graph is shared with its group like any other")
+		t.Error("the graph is shared with its group like any other")
+	}
+}
+
+// An existing graph is not withdrawn when its last device leaves. Removing a
+// structure a user may have edited is the harsher of the two actions, and the
+// same reasoning already governs a graph whose group is gone.
+func TestGraphSurvivesItsLastDeviceLeaving(t *testing.T) {
+	h := newHarness(t)
+	h.world.setGroups("/acme")
+	h.world.meter("d1", "Hauptzaehler", 1000, "/acme")
+	h.mustFull(t)
+	before := h.graphOfGroup(t, "/acme")
+
+	h.world.removeDevice("d1")
+	h.mustFull(t)
+
+	after := h.graphOfGroup(t, "/acme")
+	if after.Id != before.Id {
+		t.Errorf("expected the same graph, got %v instead of %v", after.Id, before.Id)
+	}
+	if got := nodeIds(after); !reflect.DeepEqual(got, []string{model.RootNodeId}) {
+		t.Errorf("expected the root and nothing else, got %v", got)
 	}
 }
 
@@ -876,6 +907,9 @@ func TestGroupPollPicksUpANewGroup(t *testing.T) {
 	h := newHarness(t, intervals(5*time.Millisecond, time.Hour))
 	h.world.setGroups("/acme")
 	h.world.meter("d1", "Hauptzaehler", 1000, "/acme")
+	// The device is there before the group is. Without one the new group would
+	// get no graph, and the group poll refreshes groups, not devices.
+	h.world.meter("d2", "Zaehler Neu", 700, "/neu")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup

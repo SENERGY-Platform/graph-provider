@@ -1,8 +1,8 @@
 # graph-provider
 
-Maintains one default energy-flow graph per Keycloak group: named after the group,
-containing every device the group has access to, structured by what the meters actually
-read, and shared back with the group.
+Maintains one default energy-flow graph per Keycloak group that owns at least one
+device: named after the group, containing every device the group has access to,
+structured by what the meters actually read, and shared back with the group.
 
 Every graph is built by hand otherwise. A site with ninety meters is ninety manual
 assignments, and a newly provisioned device belongs to no graph at all, so it silently

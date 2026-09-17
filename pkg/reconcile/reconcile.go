@@ -475,6 +475,18 @@ func (this *Reconciler) group(ctx context.Context, path string, existing platfor
 	devices := this.cache.DevicesOfGroup(path)
 
 	if existing.Id == "" {
+		if len(devices) == 0 {
+			// A graph holding nothing but its root carries no information, and
+			// a realm has far more groups than groups that own a meter -
+			// departments, roles, the tree above a site. Creating one per group
+			// fills the graph view with empty entries a user then has to sort
+			// through.
+			//
+			// Nothing is lost by waiting: a device joining the group triggers a
+			// pass of its own, and the safety-net pass finds it in any case.
+			this.logger.Debug("group has no devices, no default graph created", "group", path)
+			return nil
+		}
 		return this.create(ctx, group, devices)
 	}
 	return this.update(ctx, group, devices, existing)

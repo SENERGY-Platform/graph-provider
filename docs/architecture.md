@@ -1,8 +1,8 @@
 # Architecture
 
-One default energy-flow graph per Keycloak group: named after the group, holding every
-device the group has access to, structured by what the meters actually read, and shared
-back with the group.
+One default energy-flow graph per Keycloak group that owns at least one device: named
+after the group, holding every device the group has access to, structured by what the
+meters actually read, and shared back with the group.
 
 ## Scope
 

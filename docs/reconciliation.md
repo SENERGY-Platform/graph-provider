@@ -24,12 +24,24 @@ holds before relying on it for anything beyond the safeguard.
 The full heuristic runs, the tree is validated locally, the graph is written, and the
 permissions are set. See [tokens-and-permissions.md](tokens-and-permissions.md).
 
+**Only for a group that owns at least one device.** A graph holding nothing but its
+root carries no information, and a realm has far more groups than groups that own a
+meter — departments, roles, the tree above a site. One graph per group would fill the
+graph view with empty entries a user has to sort through. Nothing is lost by waiting:
+a device joining the group triggers a pass of its own, and the safety-net pass finds it
+in any case.
+
+This is a rule for creation only. An existing graph whose last device left keeps its
+root and stays shared — see below.
+
 ## Graph exists
 
 - **New device** goes to the parent the same capacity test yields, otherwise to the
   root. `system_changed` on the new edge, not on the old ones.
 - **Device left the group** — the node is deleted. The model reroutes the incoming
-  edges itself and marks them `system_changed`.
+  edges itself and marks them `system_changed`. A graph that runs empty this way is
+  **not** deleted: it may carry a user's structure, and the harsher of the two actions
+  is not the one taken here, the same reasoning as for a graph whose group is gone.
 - **Group renamed** — the root's `name` attribute is rewritten, but **only** while it
   still matches `graph-provider/name`. If a user renamed the unit, their name stays;
   `graph-provider/name` is updated anyway, so the next group rename does not run
