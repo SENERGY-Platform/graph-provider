@@ -688,8 +688,9 @@ func rootName(t *testing.T, graph platform.Graph) string {
 
 // --- fixtures ----------------------------------------------------------------
 
-// electricityType is a device type whose output carries the electricity
-// measuring function, which is the only way a carrier is identifiable.
+// electricityType is a device type whose output carries the energy measuring
+// function and the electricity medium, which together are the only way a
+// carrier is identifiable.
 func electricityType(id string) *platform.DeviceType {
 	return &platform.DeviceType{
 		Id: id,
@@ -701,6 +702,7 @@ func electricityType(id string) *platform.DeviceType {
 					SubContentVariables: []platform.ContentVariable{{
 						Name:       "energy",
 						FunctionId: model.CarrierFunctionId[model.Electricity],
+						AspectIds:  []string{model.MediumAspectId[model.Electricity]},
 					}},
 				},
 			}},

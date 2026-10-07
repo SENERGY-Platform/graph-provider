@@ -24,8 +24,8 @@ github.com/SENERGY-Platform/go-service-base/struct-logger v0.8.0 h1:CxfCO1t2ADa0
 github.com/SENERGY-Platform/go-service-base/struct-logger v0.8.0/go.mod h1:kvsSQEb3MU78D+Sepf39nTmLcIJiO4FeFwlcdYZ/PyU=
 github.com/SENERGY-Platform/mgw-cloud-proxy/cert-manager/lib v0.0.4 h1:+0g0T8Z2nJfmsVzqoKX4UyS2MiEAZQUbefbUGBDbsGc=
 github.com/SENERGY-Platform/mgw-cloud-proxy/cert-manager/lib v0.0.4/go.mod h1:UPtGbiAOtGd78qgM0HZrtiKxcn3HebSV5QAZvHme998=
-github.com/SENERGY-Platform/models/go v0.0.0-20260710115411-5b8e00d6e038 h1:7yEuyx32EiFBUXX7cwhAEWHGdN4VjAIZLtGyJAZwDsU=
-github.com/SENERGY-Platform/models/go v0.0.0-20260710115411-5b8e00d6e038/go.mod h1:5B2cSnYKuAmeco4mJPhY5eVO+oMqXLmnl9wxh1G7e9E=
+github.com/SENERGY-Platform/models/go v0.0.0-20260902082034-9c8c8bd56d88 h1:n4jBnmMzG5s7e6x9iRSsdbl4HSmG1A3WEDN4fdc8mb8=
+github.com/SENERGY-Platform/models/go v0.0.0-20260902082034-9c8c8bd56d88/go.mod h1:5B2cSnYKuAmeco4mJPhY5eVO+oMqXLmnl9wxh1G7e9E=
 github.com/SENERGY-Platform/permissions-v2 v0.0.45 h1:o8w+6zA8lRH00fXYxrMs2EEX9vR5BSO7T+e3dJXbwhI=
 github.com/SENERGY-Platform/permissions-v2 v0.0.45/go.mod h1:TTM/9lOE9d+JHhnEQR7aFgWRGOtYBRZIyA9v12/ofjA=
 github.com/SENERGY-Platform/service-commons v0.0.0-20260821114734-3e4578ac2358 h1:RGgwqd2PKoBCbW2aBdl43OO5O7JNC2LKE452Ihi4TdM=

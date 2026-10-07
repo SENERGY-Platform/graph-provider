@@ -42,6 +42,21 @@ be wrong, none of them fatal because a user can correct the result:
   device, and a whole site of idle meters came out as an invented hierarchy under
   whichever device sorted first.
 
+## A gas meter counting cubic metres is collected as measuring no medium
+
+`einzelfall`, found in the catalog snapshot of 2026-10-05: the two MOSES gas meter types
+annotate `Get-Volume` with `Gas`. This service does not read that value — see the
+carrier table in [structure-heuristic.md](structure-heuristic.md) — so such a device
+lands in the collector for devices without an energy flow, next to contacts and motion
+sensors. The dashboard does read it, converted to kilowatt-hours with a calorific value
+per month, and draws the device as a gas consumer.
+
+Left as it is because the alternative is not a one-liner: read as gas, cubic metres
+would be compared against kilowatt-hours in the same tree, and converting needs the
+calorific values the dashboard keeps. Not a regression either: before the metadata model
+of 2026-10 the same value carried no function this service read. A user can move the
+device out of the collector, and a pass leaves it where they put it.
+
 ## One malformed device type costs a whole batch of readings
 
 Column and service names come from device types and are validated by the timescale

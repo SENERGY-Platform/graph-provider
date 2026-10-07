@@ -24,11 +24,17 @@ import (
 	"github.com/SENERGY-Platform/models/go/models"
 )
 
-const (
-	electricityFunctionId = "urn:infai:ses:measuring-function:57dfd369-92db-462c-aca4-a767b52c972e"
-	gasFunctionId         = "urn:infai:ses:measuring-function:0bab7253-5e8a-4e7c-9005-39724d6a2b4f"
-	unrelatedFunctionId   = "urn:infai:ses:controlling-function:deadbeef-0000-0000-0000-000000000000"
-)
+const unrelatedFunctionId = "urn:infai:ses:controlling-function:deadbeef-0000-0000-0000-000000000000"
+
+// meter is a value annotated the way a counter of carrier is: the carrier's
+// measuring function and its medium aspect.
+func meter(name string, carrier model.Carrier) models.ContentVariable {
+	return models.ContentVariable{
+		Name:       name,
+		FunctionId: model.CarrierFunctionId[carrier],
+		AspectIds:  []string{model.MediumAspectId[carrier]},
+	}
+}
 
 // content wraps a content variable into a models.Content, the shape Inputs
 // and Outputs are lists of.
@@ -49,10 +55,7 @@ func TestColumns(t *testing.T) {
 					{
 						Id: "service-1",
 						Outputs: []models.Content{
-							content(models.ContentVariable{
-								Name:       "value",
-								FunctionId: electricityFunctionId,
-							}),
+							content(meter("value", model.Electricity)),
 						},
 					},
 				},
@@ -74,7 +77,7 @@ func TestColumns(t *testing.T) {
 									{
 										Name: "phase",
 										SubContentVariables: []models.ContentVariable{
-											{Name: "value", FunctionId: electricityFunctionId},
+											meter("value", model.Electricity),
 										},
 									},
 								},
@@ -94,8 +97,8 @@ func TestColumns(t *testing.T) {
 					{
 						Id: "service-1",
 						Outputs: []models.Content{
-							content(models.ContentVariable{Name: "gas_in", FunctionId: gasFunctionId}),
-							content(models.ContentVariable{Name: "electricity_out", FunctionId: electricityFunctionId}),
+							content(meter("gas_in", model.Gas)),
+							content(meter("electricity_out", model.Electricity)),
 						},
 					},
 				},
@@ -115,9 +118,9 @@ func TestColumns(t *testing.T) {
 							content(models.ContentVariable{
 								Name: "power",
 								SubContentVariables: []models.ContentVariable{
-									{Name: "l1", FunctionId: electricityFunctionId},
-									{Name: "l2", FunctionId: electricityFunctionId},
-									{Name: "l3", FunctionId: electricityFunctionId},
+									meter("l1", model.Electricity),
+									meter("l2", model.Electricity),
+									meter("l3", model.Electricity),
 								},
 							}),
 						},
@@ -131,13 +134,13 @@ func TestColumns(t *testing.T) {
 			},
 		},
 		{
-			name: "an input annotated with a carrier function is ignored",
+			name: "an input annotated like a meter is ignored",
 			deviceType: models.DeviceType{
 				Services: []models.Service{
 					{
 						Id: "service-1",
 						Inputs: []models.Content{
-							content(models.ContentVariable{Name: "setpoint", FunctionId: electricityFunctionId}),
+							content(meter("setpoint", model.Electricity)),
 						},
 					},
 				},
@@ -159,10 +162,10 @@ func TestColumns(t *testing.T) {
 										// column, even though a descendant is annotated.
 										Name: "",
 										SubContentVariables: []models.ContentVariable{
-											{Name: "value", FunctionId: electricityFunctionId},
+											meter("value", model.Electricity),
 										},
 									},
-									{Name: "sibling", FunctionId: gasFunctionId},
+									meter("sibling", model.Gas),
 								},
 							}),
 						},
@@ -179,7 +182,7 @@ func TestColumns(t *testing.T) {
 			want:       []model.CarrierColumn{},
 		},
 		{
-			name: "services and outputs but no matching function",
+			name: "services and outputs but no meter annotation",
 			deviceType: models.DeviceType{
 				Services: []models.Service{
 					{
@@ -200,14 +203,14 @@ func TestColumns(t *testing.T) {
 					{
 						Id: "service-b",
 						Outputs: []models.Content{
-							content(models.ContentVariable{Name: "z", FunctionId: electricityFunctionId}),
-							content(models.ContentVariable{Name: "a", FunctionId: gasFunctionId}),
+							content(meter("z", model.Electricity)),
+							content(meter("a", model.Gas)),
 						},
 					},
 					{
 						Id: "service-a",
 						Outputs: []models.Content{
-							content(models.ContentVariable{Name: "m", FunctionId: electricityFunctionId}),
+							content(meter("m", model.Electricity)),
 						},
 					},
 				},
@@ -252,6 +255,7 @@ func TestWildcardListNameIsNotAColumn(t *testing.T) {
 						SubContentVariables: []models.ContentVariable{{
 							Name:       "energy",
 							FunctionId: model.CarrierFunctionId[model.Electricity],
+							AspectIds:  []string{model.MediumAspectId[model.Electricity]},
 						}},
 					}},
 				},
@@ -278,6 +282,7 @@ func TestNumericIndexIsAColumn(t *testing.T) {
 						SubContentVariables: []models.ContentVariable{{
 							Name:       "energy",
 							FunctionId: model.CarrierFunctionId[model.Electricity],
+							AspectIds:  []string{model.MediumAspectId[model.Electricity]},
 						}},
 					}},
 				},
@@ -306,11 +311,13 @@ func TestASiblingOfAWildcardBranchSurvives(t *testing.T) {
 							SubContentVariables: []models.ContentVariable{{
 								Name:       "lost",
 								FunctionId: model.CarrierFunctionId[model.Electricity],
+								AspectIds:  []string{model.MediumAspectId[model.Electricity]},
 							}},
 						},
 						{
 							Name:       "total",
 							FunctionId: model.CarrierFunctionId[model.Electricity],
+							AspectIds:  []string{model.MediumAspectId[model.Electricity]},
 						},
 					},
 				},
@@ -320,5 +327,101 @@ func TestASiblingOfAWildcardBranchSurvives(t *testing.T) {
 	got := Columns(deviceType)
 	if len(got) != 1 || got[0].Name != "reading.total" {
 		t.Errorf("expected only reading.total, got %+v", got)
+	}
+}
+
+// The recognition rule, case by case. It has to give the dashboard's answer on
+// every value, so the cases follow carrier.ts there: a column only one side
+// recognised would place a device the other side calls one that measures nothing.
+func TestCarrierOf(t *testing.T) {
+	const (
+		consumption     = "urn:infai:ses:aspect:74a7b913-73ac-42b7-9b35-573f2c1e97cf"
+		storage         = "urn:infai:ses:aspect:9a02ed7f-2304-47a1-92bd-54998959351a"
+		charging        = "urn:infai:ses:aspect:a47386f2-3160-404e-a700-ae4ce06f49bd"
+		discharging     = "urn:infai:ses:aspect:69db99ab-5fb5-4375-b580-792833f9fef6"
+		target          = "urn:infai:ses:aspect:4f4188b6-f944-45fa-9429-15655f691397"
+		total           = "urn:infai:ses:aspect:fdc999eb-d366-44e8-9d24-bfd48d5fece1"
+		powerFunctionId = "urn:infai:ses:measuring-function:1c7c90fb-73b6-4690-aac2-72e9735e68d0" // Get Power
+		// Get Electricity Energy Consumption, the function the medium used to be in.
+		oldElectricityFunctionId = "urn:infai:ses:measuring-function:57dfd369-92db-462c-aca4-a767b52c972e"
+	)
+	electricity := model.MediumAspectId[model.Electricity]
+	gas := model.MediumAspectId[model.Gas]
+	oil := model.MediumAspectId[model.Oil]
+	heat := model.MediumAspectId[model.Heat]
+	water := model.MediumAspectId[model.Water]
+
+	tests := []struct {
+		name       string
+		functionId string
+		aspectIds  []string
+		want       model.Carrier
+	}{
+		{"electricity on Get-Energy", model.EnergyFunctionId, []string{electricity}, model.Electricity},
+		{"gas on Get-Energy", model.EnergyFunctionId, []string{gas}, model.Gas},
+		{"heating oil on Get-Energy", model.EnergyFunctionId, []string{oil}, model.Oil},
+		{"heat on Get-Energy", model.EnergyFunctionId, []string{heat}, model.Heat},
+		{"water on Get-Volume", model.VolumeFunctionId, []string{water}, model.Water},
+		{"consumption is a draw", model.EnergyFunctionId, []string{electricity, consumption}, model.Electricity},
+		{"aspects beside the medium do not matter", model.EnergyFunctionId, []string{total, electricity}, model.Electricity},
+		{"gas and Heating is gas", model.EnergyFunctionId, []string{heat, gas}, model.Gas},
+		{"heating oil and Heating is oil", model.EnergyFunctionId, []string{heat, oil}, model.Oil},
+		{"two media are read as the first in Carriers order", model.EnergyFunctionId, []string{gas, electricity}, model.Electricity},
+
+		{"generation is not read", model.EnergyFunctionId, []string{electricity, model.GenerationAspectId}, ""},
+		{"storage is not read", model.EnergyFunctionId, []string{electricity, storage}, ""},
+		{"charging is not read", model.EnergyFunctionId, []string{electricity, charging}, ""},
+		{"discharging is not read", model.EnergyFunctionId, []string{electricity, discharging}, ""},
+		{"a target is not read", model.EnergyFunctionId, []string{electricity, target}, ""},
+		{"the medium on another quantity is not read", powerFunctionId, []string{electricity}, ""},
+		{"Get-Energy without a medium is not read", model.EnergyFunctionId, []string{consumption}, ""},
+		{"no function is not read", "", []string{electricity}, ""},
+		// Gas counted in cubic metres becomes energy only through a calorific value
+		// no device type states. Read as gas it would be compared against meters
+		// counting kilowatt-hours in the same tree.
+		{"gas on Get-Volume is not read", model.VolumeFunctionId, []string{gas}, ""},
+		{"water on Get-Energy is not read", model.EnergyFunctionId, []string{water}, ""},
+		{"the old medium-specific function is not read", oldElectricityFunctionId, nil, ""},
+		{"the old function with a medium aspect is not read", oldElectricityFunctionId, []string{electricity}, ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := carrierOf(test.functionId, test.aspectIds)
+			if ok != (test.want != "") || got != test.want {
+				t.Errorf("carrierOf() = %q, %v, want %q", got, ok, test.want)
+			}
+		})
+	}
+}
+
+// A bidirectional grid meter declares its import and export register on the
+// same function and medium. Only the import is a draw.
+func TestColumnsOfABidirectionalMeterReadTheImportOnly(t *testing.T) {
+	export := meter("export", model.Electricity)
+	export.AspectIds = append(export.AspectIds, model.GenerationAspectId)
+	deviceType := models.DeviceType{
+		Services: []models.Service{{
+			Id: "svc",
+			Outputs: []models.Content{
+				content(models.ContentVariable{
+					Name:                "register",
+					SubContentVariables: []models.ContentVariable{meter("import", model.Electricity), export},
+				}),
+			},
+		}},
+	}
+	want := []model.CarrierColumn{{ServiceId: "svc", Name: "register.import", Carrier: model.Electricity}}
+	if got := Columns(deviceType); !reflect.DeepEqual(got, want) {
+		t.Errorf("Columns() = %#v, want %#v", got, want)
+	}
+}
+
+// The order decides a value naming two media and the tie in primaryCarrier, and
+// it has to be the dashboard's ENERGY_CARRIERS. Pinned literally so that a
+// reordering here fails rather than silently disagreeing with the view.
+func TestCarriersFollowTheDashboardOrder(t *testing.T) {
+	want := []model.Carrier{"electricity", "gas", "oil", "heat", "water"}
+	if !reflect.DeepEqual(model.Carriers, want) {
+		t.Errorf("model.Carriers = %v, want the dashboard's order %v", model.Carriers, want)
 	}
 }

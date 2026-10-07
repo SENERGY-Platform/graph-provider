@@ -6,9 +6,9 @@ graph creation; afterwards only single devices are placed by the same test.
 ## Scope
 
 Holds for the heuristic in `pkg/structure` together with the carrier analysis in
-`pkg/carrier` and the consumption queries in `pkg/consumption`. The measuring-function
-ids below are platform constants; the tolerance and the reference window are
-configuration.
+`pkg/carrier` and the consumption queries in `pkg/consumption`. The aspect and
+measuring-function ids below are platform constants; the tolerance and the reference
+window are configuration.
 
 **Not this if**: the question is what happens to an *existing* graph on a later pass —
 existing edges are never re-parented, see [reconciliation.md](reconciliation.md). And
@@ -28,15 +28,42 @@ Those whose group permissions include the group path with at least `read`.
 
 ### 2. Carriers and columns per device
 
-There is no "gas meter" field. A carrier is identified by the measuring function
-annotated on a device type's output content variables:
+There is no "gas meter" field. A carrier is identified by the annotation on a device
+type's output content variables: **a value reads a carrier when it carries the
+carrier's `Medium` aspect in `aspect_ids` and the measuring function of the carrier's
+quantity.** Both halves are needed — the aspect alone is on a plug's wattage as well as
+on its counter, and the function alone says a quantity was counted, not of what.
 
-| Carrier | Measuring function |
-| --- | --- |
-| electricity | `urn:infai:ses:measuring-function:57dfd369-92db-462c-aca4-a767b52c972e` |
-| gas | `urn:infai:ses:measuring-function:0bab7253-5e8a-4e7c-9005-39724d6a2b4f` |
-| oil | `urn:infai:ses:measuring-function:a75687f5-8bca-421f-8e57-a11176c31591` |
-| water | `urn:infai:ses:measuring-function:81fbff32-c4a4-4f13-96ca-cfc7a4cfa4f0` |
+| Carrier | Medium aspect | Measuring function |
+| --- | --- | --- |
+| electricity | `Electricity` `urn:infai:ses:aspect:412a48ad-3a80-46f7-8b99-408c4b9c3528` | Get-Energy |
+| gas | `Gas` `urn:infai:ses:aspect:7ea324c1-48e4-419a-a499-325d79dac09f` | Get-Energy |
+| oil | `HeatingOil` `urn:infai:ses:aspect:90e9a466-7197-40ad-ae93-0574c6d9862e` | Get-Energy |
+| heat | `Heating` `urn:infai:ses:aspect:1d69d3b6-d16f-430c-bf58-f23b26cd84c4` | Get-Energy |
+| water | `Water` `urn:infai:ses:aspect:b8b3b549-3b01-4604-a727-20aa528c21c9` | Get-Volume |
+
+Get-Energy is `urn:infai:ses:measuring-function:474471c3-e401-4b54-8963-53739a3b1de4`,
+Get-Volume `urn:infai:ses:measuring-function:f5344662-63d2-40b7-9b9e-0b28a2d34252`.
+
+- **Only what was drawn is read.** A value that also carries `Generation` is a yield and
+  is skipped; `Consumption` or no direction at all is a draw. The structure places
+  consumers, and an inverter's yield read as a draw would put it into the tree as a load.
+- **A store's flows and setpoints are never read**: `Storage`, `Charging`,
+  `Discharging`, `Target`.
+- **Two media on one value**: the first in the order of the table wins, so a fuel
+  together with `Heating` is the fuel.
+- **Gas counted in cubic metres is not read.** Turning it into energy takes a calorific
+  value no device type states, and read as gas it would be compared against meters
+  counting kilowatt-hours in the same tree.
+
+The rule is the dashboard's, in `src/lib/energy/carrier.ts` of smartador-ems, and has
+to stay identical: a column only one side recognised is a device the graph places as a
+consumer and the dashboard draws as one that measures nothing, or the other way round.
+Aspects are compared by id, not by descent in the aspect tree, for that reason.
+
+Since the metadata model of 2026-10. Before it the medium was in the function —
+`Get Electricity Energy Consumption` and its siblings — and those functions are gone
+from the catalog, so they are not read as a fallback.
 
 The column name is the JSON path from the output root down to the annotated leaf,
 joined with `.`. A device whose type reads no carrier carries no energy flow; it is

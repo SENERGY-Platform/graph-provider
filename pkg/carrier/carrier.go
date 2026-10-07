@@ -17,14 +17,16 @@
 // Package carrier derives the carrier columns of a device type.
 //
 // The device repository has no field saying "this is a gas meter". What it
-// has is the measuring function each output content variable is annotated
-// with, and model.CarrierByFunctionId is the map from that function to the
-// carrier it identifies. This package walks a device type's outputs and
-// turns that annotation into the columns SPEC.md's structure heuristic
-// needs.
+// has is the annotation on each output content variable: a measuring function
+// saying what quantity was counted, and a set of aspects saying of what and
+// which way. carrierOf turns that annotation into a carrier, by the same rule
+// the dashboard applies, and this package walks a device type's outputs and
+// produces the columns the structure heuristic needs - see
+// docs/structure-heuristic.md.
 package carrier
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -75,7 +77,7 @@ func collect(variable models.ContentVariable, serviceId string, prefix []string,
 	}
 	path := append(append([]string{}, prefix...), variable.Name)
 
-	if carrier, ok := model.CarrierByFunctionId[variable.FunctionId]; ok {
+	if carrier, ok := carrierOf(variable.FunctionId, variable.AspectIds); ok {
 		into = append(into, model.CarrierColumn{
 			ServiceId: serviceId,
 			Name:      strings.Join(path, model.ColumnPathSeparator),
@@ -87,6 +89,40 @@ func collect(variable models.ContentVariable, serviceId string, prefix []string,
 		into = collect(child, serviceId, path, into)
 	}
 	return into
+}
+
+// carrierOf is the carrier a value counts what was drawn of, if any.
+//
+// A value reads a carrier when it carries the carrier's medium aspect and is
+// counted with the carrier's function - see model.MediumAspectId. Where it names
+// two media, the first in model.Carriers order wins; the model forbids two
+// aspects of one class, but the device repository does not enforce that, so the
+// answer has to be stable.
+//
+// AspectIds only, never the deprecated AspectId. The device repository fills
+// the plural field from the singular one on every read, and sets the singular
+// one to the alphabetically first of the set - on a value naming a medium and a
+// direction, a coin flip between the two.
+//
+// There is no fallback to the medium-specific functions that came before
+// Get-Energy and Get-Volume. The catalog no longer carries them, and the
+// dashboard does not read them either: a column only one side recognised would
+// be a contradiction between the graph and the view drawing it.
+func carrierOf(functionId string, aspectIds []string) (model.Carrier, bool) {
+	if functionId == "" {
+		return "", false
+	}
+	for _, aspectId := range aspectIds {
+		if aspectId == model.GenerationAspectId || model.UnreadAspectIds[aspectId] {
+			return "", false
+		}
+	}
+	for _, carrier := range model.Carriers {
+		if functionId == model.CarrierFunctionId[carrier] && slices.Contains(aspectIds, model.MediumAspectId[carrier]) {
+			return carrier, true
+		}
+	}
+	return "", false
 }
 
 // addressable reports whether a content variable's name can appear in a column

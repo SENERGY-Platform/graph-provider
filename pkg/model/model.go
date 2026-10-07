@@ -38,33 +38,82 @@ const (
 	Electricity Carrier = "electricity"
 	Gas         Carrier = "gas"
 	Oil         Carrier = "oil"
+	Heat        Carrier = "heat"
 	Water       Carrier = "water"
 )
 
 // Carriers lists every carrier this service recognises, in a stable order.
-var Carriers = []Carrier{Electricity, Gas, Oil, Water}
+//
+// The order of the dashboard's ENERGY_CARRIERS, and for the same reason: where
+// a value names two media, the first one here wins. Heat comes after the fuels
+// so that a value naming a fuel and Heating is read as the fuel.
+var Carriers = []Carrier{Electricity, Gas, Oil, Heat, Water}
 
-// CarrierFunctionId maps a carrier to the measuring function that identifies it.
+// The measuring functions a carrier is counted with, one per quantity.
+//
+// Since the metadata model of 2026-10 the medium is no longer in the function -
+// "Get Electricity Energy Consumption" and its siblings are gone from the
+// catalog - but in the aspects, and the function only says what quantity was
+// counted. See MediumAspectId.
+const (
+	EnergyFunctionId = "urn:infai:ses:measuring-function:474471c3-e401-4b54-8963-53739a3b1de4"
+	VolumeFunctionId = "urn:infai:ses:measuring-function:f5344662-63d2-40b7-9b9e-0b28a2d34252"
+)
+
+// CarrierFunctionId maps a carrier to the measuring function it is counted
+// with: Get-Energy for everything but water, Get-Volume for water.
 //
 // Ids rather than names: a function's display name is editable and localised,
 // its id is not. Nothing resolves these against the device repository - the id
 // is the identity, and a lookup would turn a stable key into a request that can
-// fail.
+// fail. The same holds for every aspect id below.
 var CarrierFunctionId = map[Carrier]string{
-	Electricity: "urn:infai:ses:measuring-function:57dfd369-92db-462c-aca4-a767b52c972e",
-	Gas:         "urn:infai:ses:measuring-function:0bab7253-5e8a-4e7c-9005-39724d6a2b4f",
-	Oil:         "urn:infai:ses:measuring-function:a75687f5-8bca-421f-8e57-a11176c31591",
-	Water:       "urn:infai:ses:measuring-function:81fbff32-c4a4-4f13-96ca-cfc7a4cfa4f0",
+	Electricity: EnergyFunctionId,
+	Gas:         EnergyFunctionId,
+	Oil:         EnergyFunctionId,
+	Heat:        EnergyFunctionId,
+	Water:       VolumeFunctionId,
 }
 
-// CarrierByFunctionId is the reverse of CarrierFunctionId.
-var CarrierByFunctionId = func() map[string]Carrier {
-	result := map[string]Carrier{}
-	for carrier, functionId := range CarrierFunctionId {
-		result[functionId] = carrier
-	}
-	return result
-}()
+// MediumAspectId maps a carrier to the aspect of the Medium class that names it.
+//
+// A column reads a carrier when it carries this aspect and the carrier's
+// function in CarrierFunctionId. Both halves are needed: the aspect alone is on
+// a plug's wattage as well as on its counter, and the function alone says a
+// quantity was counted but not of what.
+//
+// Compared by id, not by descent in the aspect tree. The dashboard does the
+// same, and the two must agree on which columns read a carrier: a column only
+// one of them recognised would be a device the graph places as a consumer and
+// the dashboard draws as one that measures nothing, or the other way round.
+var MediumAspectId = map[Carrier]string{
+	Electricity: "urn:infai:ses:aspect:412a48ad-3a80-46f7-8b99-408c4b9c3528",
+	Gas:         "urn:infai:ses:aspect:7ea324c1-48e4-419a-a499-325d79dac09f",
+	Oil:         "urn:infai:ses:aspect:90e9a466-7197-40ad-ae93-0574c6d9862e", // HeatingOil
+	Heat:        "urn:infai:ses:aspect:1d69d3b6-d16f-430c-bf58-f23b26cd84c4", // Heating
+	Water:       "urn:infai:ses:aspect:b8b3b549-3b01-4604-a727-20aa528c21c9",
+}
+
+// GenerationAspectId is the aspect of the Direction class that marks a column
+// as what was fed in rather than drawn.
+//
+// Such a column is not read. The structure heuristic places consumers, and the
+// old functions this replaces were all consumption functions; a plant's yield
+// read as a draw would put the inverter into the tree as a load. Every other
+// column of a carrier is a draw, whether it says Consumption or no direction.
+const GenerationAspectId = "urn:infai:ses:aspect:fa09fdeb-3dbe-42ca-9404-1ee9380bce2f"
+
+// UnreadAspectIds keep a column out whatever its medium.
+//
+// Storage, Charging and Discharging are a store's flows, neither a draw nor a
+// yield - read as one they would put a battery's cycling into the containment
+// test. Target is a setpoint, not something that was counted.
+var UnreadAspectIds = map[string]bool{
+	"urn:infai:ses:aspect:9a02ed7f-2304-47a1-92bd-54998959351a": true, // Storage
+	"urn:infai:ses:aspect:a47386f2-3160-404e-a700-ae4ce06f49bd": true, // Charging
+	"urn:infai:ses:aspect:69db99ab-5fb5-4375-b580-792833f9fef6": true, // Discharging
+	"urn:infai:ses:aspect:4f4188b6-f944-45fa-9429-15655f691397": true, // Target
+}
 
 // ColumnPathSeparator joins the names of nested content variables into the
 // column name the timescale wrapper knows a value by.

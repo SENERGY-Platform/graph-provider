@@ -45,25 +45,32 @@ func TestGroupName(t *testing.T) {
 	}
 }
 
-func TestCarrierByFunctionIdCoversEveryCarrier(t *testing.T) {
-	if len(CarrierByFunctionId) != len(Carriers) {
-		t.Fatalf("expected one function id per carrier, got %v for %v carriers",
-			len(CarrierByFunctionId), len(Carriers))
+// Every carrier needs both halves of the rule, and the medium is the half that
+// tells carriers apart: two carriers on one aspect would be one carrier read
+// twice. A medium aspect that is also a direction or an unread aspect would
+// make its carrier unreadable.
+func TestEveryCarrierHasAFunctionAndItsOwnMedium(t *testing.T) {
+	if len(CarrierFunctionId) != len(Carriers) || len(MediumAspectId) != len(Carriers) {
+		t.Fatalf("expected one function and one medium per carrier, got %v and %v for %v carriers",
+			len(CarrierFunctionId), len(MediumAspectId), len(Carriers))
 	}
+	carrierOfMedium := map[string]Carrier{}
 	for _, carrier := range Carriers {
-		functionId, named := CarrierFunctionId[carrier]
-		if !named || functionId == "" {
-			t.Errorf("%v has no measuring function", carrier)
+		if functionId := CarrierFunctionId[carrier]; functionId != EnergyFunctionId && functionId != VolumeFunctionId {
+			t.Errorf("%v is counted with %q, which is neither Get-Energy nor Get-Volume", carrier, functionId)
+		}
+		medium := MediumAspectId[carrier]
+		if medium == "" {
+			t.Errorf("%v has no medium aspect", carrier)
 			continue
 		}
-		if back := CarrierByFunctionId[functionId]; back != carrier {
-			t.Errorf("%v does not map back: got %v", carrier, back)
+		if other, taken := carrierOfMedium[medium]; taken {
+			t.Errorf("%v and %v share the medium aspect %v", other, carrier, medium)
 		}
-	}
-	// An unannotated variable must not resolve to a carrier, or every value
-	// without a function would be read as electricity.
-	if carrier, found := CarrierByFunctionId[""]; found {
-		t.Errorf("the empty function id must match nothing, got %v", carrier)
+		carrierOfMedium[medium] = carrier
+		if medium == GenerationAspectId || UnreadAspectIds[medium] {
+			t.Errorf("the medium aspect of %v keeps every column of it out", carrier)
+		}
 	}
 }
 

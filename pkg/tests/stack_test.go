@@ -337,13 +337,14 @@ type meter struct {
 	value float64
 }
 
-// seed creates what a graph can be built from: a protocol, the measuring
-// function that identifies electricity, a device type annotated with it, and
-// the devices themselves.
+// seed creates what a graph can be built from: a protocol, the energy
+// measuring function, a device type annotated with it and the electricity
+// medium, and the devices themselves.
 //
 // The function has to exist before the device type: the repository rejects a
 // content variable whose function_id it does not know, which is a dependency
-// no fake has ever had to have.
+// no fake has ever had to have. The aspect does not: the repository validates
+// only the deprecated singular aspect_id, and the medium is in aspect_ids.
 func (this *stack) seed(t *testing.T) (deviceTypeId string, meters []meter) {
 	t.Helper()
 
@@ -358,11 +359,11 @@ func (this *stack) seed(t *testing.T) (deviceTypeId string, meters []meter) {
 
 	_, err, code = this.repository.SetFunction(this.token, platform.Function{
 		Id:      model.CarrierFunctionId[model.Electricity],
-		Name:    "getEnergyConsumptionFunction",
+		Name:    "Get-Energy",
 		RdfType: "https://senergy.infai.org/ontology/MeasuringFunction",
 	})
 	if err != nil {
-		t.Fatalf("unable to create the electricity measuring function (%v): %v", code, err)
+		t.Fatalf("unable to create the energy measuring function (%v): %v", code, err)
 	}
 
 	deviceType, err, code := this.repository.SetDeviceType(this.token, platform.DeviceType{
@@ -382,6 +383,7 @@ func (this *stack) seed(t *testing.T) (deviceTypeId string, meters []meter) {
 						Name:       "energy",
 						Type:       platform.Float,
 						FunctionId: model.CarrierFunctionId[model.Electricity],
+						AspectIds:  []string{model.MediumAspectId[model.Electricity]},
 					}},
 				},
 			}},

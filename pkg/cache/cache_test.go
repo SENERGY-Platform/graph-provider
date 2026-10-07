@@ -117,6 +117,7 @@ func electricityType(id string) *platform.DeviceType {
 					SubContentVariables: []platform.ContentVariable{{
 						Name:       "energy",
 						FunctionId: model.CarrierFunctionId[model.Electricity],
+						AspectIds:  []string{model.MediumAspectId[model.Electricity]},
 					}},
 				},
 			}},

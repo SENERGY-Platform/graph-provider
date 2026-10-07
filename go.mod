@@ -8,7 +8,7 @@ require (
 	github.com/SENERGY-Platform/go-service-base/config-hdl v1.2.0
 	github.com/SENERGY-Platform/go-service-base/srv-info-hdl v0.2.0
 	github.com/SENERGY-Platform/go-service-base/struct-logger v0.8.0
-	github.com/SENERGY-Platform/models/go v0.0.0-20260710115411-5b8e00d6e038
+	github.com/SENERGY-Platform/models/go v0.0.0-20260902082034-9c8c8bd56d88
 	github.com/SENERGY-Platform/permissions-v2 v0.0.45
 	github.com/SENERGY-Platform/service-commons v0.0.0-20260821114734-3e4578ac2358
 	github.com/SENERGY-Platform/timescale-wrapper v0.1.2
