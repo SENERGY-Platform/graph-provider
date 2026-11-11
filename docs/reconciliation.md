@@ -24,15 +24,13 @@ holds before relying on it for anything beyond the safeguard.
 The full heuristic runs, the tree is validated locally, the graph is written, and the
 permissions are set. See [tokens-and-permissions.md](tokens-and-permissions.md).
 
-**Only for a group that owns at least one device.** A graph holding nothing but its
-root carries no information, and a realm has far more groups than groups that own a
-meter — departments, roles, the tree above a site. One graph per group would fill the
-graph view with empty entries a user has to sort through. Nothing is lost by waiting:
-a device joining the group triggers a pass of its own, and the safety-net pass finds it
-in any case.
+**Also for a group that owns no device yet.** Its graph then holds only the root and is
+shared like any other. Devices the group is given later are added to it as described
+below. Which groups get a graph at all is narrowed with `group_include` and
+`group_exclude`, see [configuration.md](configuration.md).
 
-This is a rule for creation only. An existing graph whose last device left keeps its
-root and stays shared — see below.
+An existing graph whose last device left likewise keeps its root and stays shared — see
+below.
 
 ## Graph exists
 

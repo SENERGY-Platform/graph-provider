@@ -850,32 +850,43 @@ func TestOneWindowForEveryDeviceOfAPass(t *testing.T) {
 
 // --- the group tree -----------------------------------------------------------
 
-// A group with no devices gets no graph. A graph holding nothing but its root
-// says nothing, and most groups in a realm own no meter at all.
-func TestGroupWithoutDevicesGetsNoGraph(t *testing.T) {
+// A group with no devices still gets its graph: the root and nothing else,
+// shared with the group like any other.
+func TestGroupWithoutDevicesGetsARootOnlyGraph(t *testing.T) {
 	h := newHarness(t)
-	h.world.setGroups("/leer", "/acme")
-	h.world.meter("d1", "Hauptzaehler", 1000, "/acme")
+	h.world.setGroups("/leer")
 
-	h.mustFull(t)
-
-	if _, exists := h.world.graphOfGroup("/leer"); exists {
-		t.Error("a group without devices must not get a graph")
-	}
-	if got := h.world.countCalls("SetGraph"); got != 1 {
-		t.Errorf("expected only the group with a device written, got %v writes", got)
-	}
-	// Not a permanent verdict: the graph is created as soon as the group has
-	// something to put in it.
-	h.world.meter("d2", "Zaehler Leer", 700, "/leer")
 	h.mustFull(t)
 
 	graph := h.graphOfGroup(t, "/leer")
-	if got := nodeIds(graph); !reflect.DeepEqual(got, []string{"d2", model.RootNodeId}) {
-		t.Errorf("expected the root and the new device, got %v", got)
+	if got := nodeIds(graph); !reflect.DeepEqual(got, []string{model.RootNodeId}) {
+		t.Errorf("expected the root and nothing else, got %v", got)
+	}
+	if err := graph.Valid(); err != nil {
+		t.Errorf("an empty graph must still be valid: %v", err)
 	}
 	if _, shared := h.world.groupPermission(graph.Id, "/leer"); !shared {
-		t.Error("the graph is shared with its group like any other")
+		t.Error("an empty graph is shared with its group like any other")
+	}
+}
+
+// A device the group is given later goes into the graph created empty, not
+// into a second one.
+func TestDeviceJoiningAnEmptyGroupLandsInItsGraph(t *testing.T) {
+	h := newHarness(t)
+	h.world.setGroups("/leer")
+	h.mustFull(t)
+	before := h.graphOfGroup(t, "/leer")
+
+	h.world.meter("d1", "Zaehler Leer", 700, "/leer")
+	h.mustFull(t)
+
+	after := h.graphOfGroup(t, "/leer")
+	if after.Id != before.Id {
+		t.Errorf("expected the same graph, got %v instead of %v", after.Id, before.Id)
+	}
+	if got := nodeIds(after); !reflect.DeepEqual(got, []string{"d1", model.RootNodeId}) {
+		t.Errorf("expected the root and the new device, got %v", got)
 	}
 }
 
@@ -907,9 +918,6 @@ func TestGroupPollPicksUpANewGroup(t *testing.T) {
 	h := newHarness(t, intervals(5*time.Millisecond, time.Hour))
 	h.world.setGroups("/acme")
 	h.world.meter("d1", "Hauptzaehler", 1000, "/acme")
-	// The device is there before the group is. Without one the new group would
-	// get no graph, and the group poll refreshes groups, not devices.
-	h.world.meter("d2", "Zaehler Neu", 700, "/neu")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
