@@ -275,6 +275,68 @@ func TestDepartureRemovesTheNodeAndKeepsTheGraphValid(t *testing.T) {
 	}
 }
 
+// An inactive device missing from an existing graph is not attached, so a user
+// who removed it does not get it back on the next pass.
+func TestInactiveDeviceIsNotAttachedToAnExistingGraph(t *testing.T) {
+	h := acmeHarness(t)
+	h.mustFull(t)
+
+	h.world.meter("d3", "Drittzaehler", 100, "/acme")
+	h.world.markInactive("d3")
+	h.world.resetCalls()
+	h.mustFull(t)
+
+	after := h.graphOfGroup(t, "/acme")
+	if got := nodeIds(after); !reflect.DeepEqual(got, []string{"d1", "d2", model.RootNodeId}) {
+		t.Errorf("expected the inactive device to stay out of the graph, got %v", got)
+	}
+	if got := h.world.countCalls("SetGraph"); got != 0 {
+		t.Errorf("expected no write for an inactive arrival, got %v", got)
+	}
+}
+
+// An inactive device that is already in the graph stays there: it is still in
+// its group, so it does not count as departed.
+func TestInactiveDeviceAlreadyInTheGraphStays(t *testing.T) {
+	h := acmeHarness(t)
+	h.mustFull(t)
+
+	h.world.markInactive("d2")
+	h.world.resetCalls()
+	h.mustFull(t)
+
+	after := h.graphOfGroup(t, "/acme")
+	if got := nodeIds(after); !reflect.DeepEqual(got, []string{"d1", "d2", model.RootNodeId}) {
+		t.Errorf("expected the inactive device to keep its node, got %v", got)
+	}
+	if got := h.world.countCalls("SetGraph"); got != 0 {
+		t.Errorf("expected no write, got %v", got)
+	}
+}
+
+// A first graph holds the active devices only, and a group whose devices are
+// all inactive gets no graph.
+func TestFirstGraphLeavesInactiveDevicesOut(t *testing.T) {
+	h := newHarness(t)
+	h.world.setGroups("/acme", "/aus")
+	h.world.meter("d1", "Hauptzaehler", 1000, "/acme")
+	h.world.meter("d2", "Abgeschaltet", 400, "/acme")
+	h.world.markInactive("d2")
+	h.world.meter("d3", "Nur Abgeschaltet", 700, "/aus")
+	h.world.markInactive("d3")
+
+	h.mustFull(t)
+
+	graph := h.graphOfGroup(t, "/acme")
+	if got := nodeIds(graph); !reflect.DeepEqual(got, []string{"d1", model.RootNodeId}) {
+		t.Errorf("expected only the active device in the first graph, got %v", got)
+	}
+	aus := h.graphOfGroup(t, "/aus")
+	if got := nodeIds(aus); !reflect.DeepEqual(got, []string{model.RootNodeId}) {
+		t.Errorf("expected a group with only inactive devices to get its root alone, got %v", got)
+	}
+}
+
 // A departure and an arrival in the same pass are one write, not two.
 func TestDepartureAndArrivalInOnePassWriteOnce(t *testing.T) {
 	h := acmeHarness(t)

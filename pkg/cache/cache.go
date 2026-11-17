@@ -422,6 +422,7 @@ func toDevice(extended platform.ExtendedDevice, groups []string) model.Device {
 		DeviceTypeId: extended.DeviceTypeId,
 		Groups:       groups,
 		Columns:      []model.CarrierColumn{},
+		Inactive:     isInactive(extended.Attributes),
 	}
 	// The full device type ships with the device, so naming a carrier costs
 	// no extra request. Without it the columns are simply unknown - better an
@@ -434,6 +435,17 @@ func toDevice(extended platform.ExtendedDevice, groups []string) model.Device {
 		device.Groups = []string{}
 	}
 	return device
+}
+
+// isInactive reads the attribute the web-ui writes for a device switched off on
+// purpose: key `inactive`, value `true`, whatever its origin.
+func isInactive(attributes []platform.Attribute) bool {
+	for _, attribute := range attributes {
+		if attribute.Key == "inactive" && attribute.Value == "true" {
+			return true
+		}
+	}
+	return false
 }
 
 func sortGroups(groups []model.Group) {

@@ -141,6 +141,11 @@ type Device struct {
 	// Groups are the Keycloak group paths that hold at least read on this
 	// device, leading slash included.
 	Groups []string `json:"groups"`
+
+	// Inactive is the device attribute `inactive` set to `true`, the mark for a
+	// meter switched off on purpose. Such a device is never attached to a graph,
+	// so removing it there is final.
+	Inactive bool `json:"inactive"`
 }
 
 // HasEnergyFlow reports whether the device measures any carrier at all.

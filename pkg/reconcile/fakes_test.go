@@ -183,6 +183,16 @@ func (this *world) setDeviceGroups(id string, groups ...string) {
 	this.deviceGroups[id] = append([]string{}, groups...)
 }
 
+// markInactive gives a device the attribute the web-ui writes for a meter
+// switched off on purpose.
+func (this *world) markInactive(id string) {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	device := this.devices[id]
+	device.Attributes = append(device.Attributes, platform.Attribute{Key: "inactive", Value: "true", Origin: "web-ui"})
+	this.devices[id] = device
+}
+
 // removeDevice is a device the repository no longer returns.
 func (this *world) removeDevice(id string) {
 	this.mu.Lock()

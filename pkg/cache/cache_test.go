@@ -200,6 +200,46 @@ func TestRefreshDevicesMergesGroupsAndColumns(t *testing.T) {
 	}
 }
 
+// A device is inactive only through the attribute `inactive` set to `true`.
+func TestRefreshDevicesReadsTheInactiveAttribute(t *testing.T) {
+	withAttribute := func(id string, attributes ...platform.Attribute) platform.ExtendedDevice {
+		d := device(id, id, "dt1", electricityType("dt1"))
+		d.Attributes = attributes
+		return d
+	}
+	devices := &fakeDevices{all: []platform.ExtendedDevice{
+		withAttribute("off", platform.Attribute{Key: "inactive", Value: "true"}),
+		withAttribute("on"),
+		// Only the exact key with the value true marks a device.
+		withAttribute("false", platform.Attribute{Key: "inactive", Value: "false"}),
+		withAttribute("other", platform.Attribute{Key: "location", Value: "true"}),
+	}}
+	perms := &fakePermissions{
+		order: []string{"off", "on", "false", "other"},
+		resources: map[string]permissions.Resource{
+			"off":   resource("off", map[string]bool{"/acme": true}),
+			"on":    resource("on", map[string]bool{"/acme": true}),
+			"false": resource("false", map[string]bool{"/acme": true}),
+			"other": resource("other", map[string]bool{"/acme": true}),
+		},
+	}
+	c := newTestCache(devices, perms, &fakeGroups{}, nil)
+
+	if err := c.RefreshDevices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	for id, want := range map[string]bool{"off": true, "on": false, "false": false, "other": false} {
+		got, ok := c.Device(id)
+		if !ok {
+			t.Fatalf("%v missing", id)
+		}
+		if got.Inactive != want {
+			t.Errorf("device %v: expected Inactive %v, got %v", id, want, got.Inactive)
+		}
+	}
+}
+
 func TestRefreshDevicesPagesUntilShortPage(t *testing.T) {
 	all := []platform.ExtendedDevice{}
 	order := []string{}

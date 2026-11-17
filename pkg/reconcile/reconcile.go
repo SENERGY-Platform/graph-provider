@@ -477,7 +477,9 @@ func (this *Reconciler) group(ctx context.Context, path string, existing platfor
 	if existing.Id == "" {
 		// Also for a group that owns no device yet: the graph then holds only
 		// its root, and the devices the group is given later are added to it
-		// by update like to any other graph.
+		// by update like to any other graph. Inactive devices are left out, for
+		// the reason in update.
+		devices = slices.DeleteFunc(slices.Clone(devices), func(device model.Device) bool { return device.Inactive })
 		return this.create(ctx, group, devices)
 	}
 	return this.update(ctx, group, devices, existing)
@@ -603,9 +605,12 @@ func (this *Reconciler) update(ctx context.Context, group model.Group, devices [
 		}
 	}
 
+	// An inactive device is not added, so a user who removed it from the graph
+	// does not get it back on the next pass. One already in the graph stays:
+	// it is still in the group, so it is not counted as departed above.
 	missing := []model.Device{}
 	for _, device := range devices {
-		if !inGraph[device.Id] {
+		if !inGraph[device.Id] && !device.Inactive {
 			missing = append(missing, device)
 		}
 	}
