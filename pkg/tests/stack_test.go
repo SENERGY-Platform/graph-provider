@@ -337,24 +337,37 @@ type meter struct {
 	value float64
 }
 
-// seed creates what a graph can be built from: a protocol, the energy
-// measuring function, a device type annotated with it and the electricity
-// medium, and the devices themselves.
+// seed creates what a graph can be built from: the electricity medium, the
+// energy measuring function, a protocol, a device type annotated with them,
+// and the devices themselves.
 //
-// The function has to exist before the device type: the repository rejects a
-// content variable whose function_id it does not know, which is a dependency
-// no fake has ever had to have. The aspect does not: the repository validates
-// only the deprecated singular aspect_id, and the medium is in aspect_ids.
+// The repository checks every ontology element a device type refers to before
+// it accepts the type, and a fresh repository knows none of them. So each one
+// is created first, in dependency order, with the admin token the stack uses
+// everywhere else. The checks, by the error they answer with:
+//
+//   - the medium, named by the content variable's aspect_ids: "unknown aspect
+//     id". No aspect class is set, as aspect_class_id_required is off, and the
+//     aspect is a leaf, which the default config allows either way.
+//   - the function, named by the content variable's function_id: "unknown
+//     function id". It must carry a URN id and an rdf_type of a measuring or
+//     controlling function. An output may use a measuring function; a
+//     controlling function is refused there.
+//   - the protocol, named by the service's protocol_id: "unknown protocol". It
+//     needs a handler and segments, and the content's protocol_segment_id has
+//     to be one of them.
+//
+// The device type refers to no concept, characteristic or device class, so none
+// of those is created.
 func (this *stack) seed(t *testing.T) (deviceTypeId string, meters []meter) {
 	t.Helper()
 
-	protocol, err, code := this.repository.SetProtocol(this.ctx, this.token, platform.Protocol{
-		Name:             "test-protocol",
-		Handler:          "test-protocol",
-		ProtocolSegments: []platform.ProtocolSegment{{Name: "body"}},
+	_, err, code := this.repository.SetAspect(this.ctx, this.token, platform.Aspect{
+		Id:   model.MediumAspectId[model.Electricity],
+		Name: "Electricity",
 	})
 	if err != nil {
-		t.Fatalf("unable to create a protocol (%v): %v", code, err)
+		t.Fatalf("unable to create the electricity aspect (%v): %v", code, err)
 	}
 
 	_, err, code = this.repository.SetFunction(this.ctx, this.token, platform.Function{
@@ -364,6 +377,15 @@ func (this *stack) seed(t *testing.T) (deviceTypeId string, meters []meter) {
 	})
 	if err != nil {
 		t.Fatalf("unable to create the energy measuring function (%v): %v", code, err)
+	}
+
+	protocol, err, code := this.repository.SetProtocol(this.ctx, this.token, platform.Protocol{
+		Name:             "test-protocol",
+		Handler:          "test-protocol",
+		ProtocolSegments: []platform.ProtocolSegment{{Name: "body"}},
+	})
+	if err != nil {
+		t.Fatalf("unable to create a protocol (%v): %v", code, err)
 	}
 
 	deviceType, err, code := this.repository.SetDeviceType(this.ctx, this.token, platform.DeviceType{
