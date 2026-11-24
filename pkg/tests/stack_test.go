@@ -38,11 +38,10 @@ import (
 	"testing"
 	"time"
 
-	devicerepo "github.com/SENERGY-Platform/device-repository/lib"
 	devicerepoclient "github.com/SENERGY-Platform/device-repository/lib/client"
-	devicerepoconfig "github.com/SENERGY-Platform/device-repository/lib/configuration"
-	"github.com/SENERGY-Platform/device-repository/lib/controller/publisher"
-	"github.com/SENERGY-Platform/device-repository/lib/tests/docker"
+	devicerepo "github.com/SENERGY-Platform/device-repository/v3/lib"
+	devicerepoconfig "github.com/SENERGY-Platform/device-repository/v3/lib/configuration"
+	"github.com/SENERGY-Platform/device-repository/v3/lib/tests/docker"
 	"github.com/SENERGY-Platform/graph-provider/pkg/cache"
 	"github.com/SENERGY-Platform/graph-provider/pkg/events"
 	"github.com/SENERGY-Platform/graph-provider/pkg/graphs"
@@ -177,13 +176,10 @@ func start(t *testing.T) *stack {
 
 	// The topics the device repository publishes its own commands to. It does
 	// not create them itself, and permissions-v2 publishes the device rights
-	// commands onto the same "devices" topic.
-	//
-	// The graph topic is deliberately absent: the device repository registers
-	// it in permissions-v2 without a Kafka target and publishes no graph
-	// commands, which is SPEC.md's "graph events are a precondition, not
-	// something this service can arrange" seen from the other side.
-	err = publisher.InitTopic(config.KafkaUrl,
+	// commands onto the same "devices" topic. Version 3 also publishes graph
+	// and thing commands, so those two topics have to exist; InitTopics
+	// returns only once every topic has a partition leader.
+	err = docker.InitTopics(config.KafkaUrl,
 		config.DeviceTopic,
 		config.DeviceTypeTopic,
 		config.DeviceGroupTopic,
@@ -192,9 +188,12 @@ func start(t *testing.T) *stack {
 		config.ConceptTopic,
 		config.CharacteristicTopic,
 		config.AspectTopic,
+		config.AspectClassTopic,
 		config.FunctionTopic,
 		config.DeviceClassTopic,
-		config.LocationTopic)
+		config.LocationTopic,
+		config.GraphTopic,
+		config.ThingTopic)
 	if err != nil {
 		t.Fatalf("unable to create the kafka topics: %v", err)
 	}
@@ -255,7 +254,7 @@ func start(t *testing.T) *stack {
 // deviceRepositoryConfigPath is the config.json the device repository ships.
 func deviceRepositoryConfigPath(t *testing.T) string {
 	t.Helper()
-	return moduleFile(t, "github.com/SENERGY-Platform/device-repository", "config.json")
+	return moduleFile(t, "github.com/SENERGY-Platform/device-repository/v3", "config.json")
 }
 
 // startPermissionsV2 runs permissions-v2 in this process and answers with the
