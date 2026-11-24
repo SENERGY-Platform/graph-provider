@@ -61,6 +61,7 @@ const (
 	// same names, so getting them wrong here would test nothing.
 	deviceTopic = "devices"
 	graphTopic  = "graphs"
+	thingTopic  = "things"
 
 	// group is the one Keycloak group the faked directory reports. Its id is
 	// what identifies the graph; the path is what sharing is keyed by.
@@ -103,8 +104,12 @@ type stack struct {
 	graphWrites      atomic.Int64
 	permissionWrites atomic.Int64
 
-	cache    *cache.Cache
-	store    *graphs.Store
+	cache *cache.Cache
+	store *graphs.Store
+	// things reads the thing endpoints of the repository, to find the meter a
+	// device was placed as. The same client the service has, but never used
+	// to decide anything: the assertions ask the repository directly.
+	things   *things.Client
 	readings *fakeReadings
 	groups   *fakeGroupSource
 	rec      *reconcile.Reconciler
@@ -233,7 +238,8 @@ func start(t *testing.T) *stack {
 	countedPermissions := countingPermissions{Client: this.permissions, writes: &this.permissionWrites}
 
 	this.cache = cache.New(countedRepository, countedPermissions, this.groups, token, deviceTopic, nil)
-	this.store = graphs.New(countedRepository, countedPermissions, things.New(this.repositoryUrl, 30*time.Second), token, graphTopic, "things", this.serviceUserId, true)
+	this.things = things.New(this.repositoryUrl, 30*time.Second)
+	this.store = graphs.New(countedRepository, countedPermissions, this.things, token, graphTopic, thingTopic, this.serviceUserId, true)
 	this.rec = reconcile.New(this.cache, this.store, this.readings, events.NewPending(), reconcile.Config{
 		ServiceUserId: this.serviceUserId,
 		Window:        referenceWindow,

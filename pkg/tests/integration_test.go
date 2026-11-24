@@ -39,11 +39,13 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	devicerepoclient "github.com/SENERGY-Platform/device-repository/v3/lib/client"
 	"github.com/SENERGY-Platform/graph-provider/pkg/carrier"
 	"github.com/SENERGY-Platform/graph-provider/pkg/graphs"
 	"github.com/SENERGY-Platform/graph-provider/pkg/model"
+	"github.com/SENERGY-Platform/graph-provider/pkg/things"
 	platform "github.com/SENERGY-Platform/models/go/models"
 	permissions "github.com/SENERGY-Platform/permissions-v2/pkg/client"
 )
@@ -102,20 +104,33 @@ func TestAgainstTheRealPlatform(t *testing.T) {
 				t.Errorf("root node is named %q, want the group's leaf name %q", name, groupName)
 			}
 
+			// A new device is placed as a meter thing, not as a device node:
+			// the node is of resource type thing and carries the thing's id,
+			// and the device is reached through the thing's open link.
+			if got := graphs.DeviceIdsIn(graph); len(got) != 0 {
+				t.Errorf("graph holds device nodes %v, want none: a new device is placed as a meter thing", got)
+			}
 			want := []string{main.id, sub.id, small.id}
 			slices.Sort(want)
-			if got := graphs.DeviceIdsIn(graph); !reflect.DeepEqual(got, want) {
-				t.Errorf("graph holds devices %v, want %v", got, want)
+			if got := world.devicesIn(t, graph); !reflect.DeepEqual(got, want) {
+				t.Errorf("graph reaches devices %v, want %v", got, want)
+			}
+			if got := graphs.ThingIdsIn(graph); len(got) != len(want) {
+				t.Errorf("graph holds thing nodes %v, want one per device", got)
+			}
+			for _, device := range meters {
+				world.assertMeter(t, graph, device)
 			}
 
 			// The tree the injected figures have to produce: the 600 sits
 			// inside the 1000, and the 200 goes to the tighter of the
 			// containers that still fit - 400 unexplained on the 1000
 			// against 600 on the 600 - which is the 1000 again. See
-			// SPEC.md, "Tightest fit is not deepest fit".
-			assertParent(t, graph, main.id, model.RootNodeId, "the largest meter hangs off the root")
-			assertParent(t, graph, sub.id, main.id, "the 600 fits inside the 1000")
-			assertParent(t, graph, small.id, main.id, "the 200 goes to the tightest container that fits")
+			// SPEC.md, "Tightest fit is not deepest fit". The figures are
+			// read through the device each meter is linked to.
+			assertParent(t, world, graph, main.id, "", "the largest meter hangs off the root")
+			assertParent(t, world, graph, sub.id, main.id, "the 600 fits inside the 1000")
+			assertParent(t, world, graph, small.id, main.id, "the 200 goes to the tightest container that fits")
 
 			// r w x and deliberately not a: the group edits the company
 			// graph, the owner keeps the right to delete and re-share it.
@@ -126,18 +141,53 @@ func TestAgainstTheRealPlatform(t *testing.T) {
 
 		{"a device withdrawn from the group", true, func(t *testing.T) {
 			world.shareDevice(t, small.id)
-			world.full(t)
 
+			// A device that left is not taken out of the graph. Its meter is
+			// the measuring point and carries what was measured there, so the
+			// thing and its node stay; what ends is the device's link to it,
+			// and only once the device was missing in two consecutive passes,
+			// so that a permissions read that glitched once cannot cut the
+			// history. See docs/reconciliation.md, "Graph exists".
+			world.full(t)
 			graph := world.defaultGraph(t)
 			if err := graph.Valid(); err != nil {
-				t.Fatalf("the graph is invalid after removing a device: %v", err)
+				t.Fatalf("the graph is invalid after the first pass without a device: %v", err)
 			}
+			_, thing := world.meterOf(t, graph, small.id)
+			if len(thing.DeviceLinks) != 1 || !world.linkOpen(thing.DeviceLinks[0]) {
+				t.Errorf("after one pass the link of the missing device is %+v, want it still open: a link is ended only after two consecutive passes",
+					thing.DeviceLinks)
+			}
+
+			world.full(t)
+			graph = world.defaultGraph(t)
+			if err := graph.Valid(); err != nil {
+				t.Fatalf("the graph is invalid after the second pass without a device: %v", err)
+			}
+			node, thing := world.meterOf(t, graph, small.id)
+			if len(thing.DeviceLinks) != 1 || world.linkOpen(thing.DeviceLinks[0]) {
+				t.Errorf("after two passes the link of the withdrawn device is %+v, want it ended", thing.DeviceLinks)
+			}
+			if node.ResourceType != model.ResourceTypeThing {
+				t.Errorf("the withdrawn device's meter has lost its node: %+v", node)
+			}
+
+			// What the graph accounts for is what is linked now: the
+			// withdrawn device is gone from it, its meter is not.
 			want := []string{main.id, sub.id}
 			slices.Sort(want)
-			if got := graphs.DeviceIdsIn(graph); !reflect.DeepEqual(got, want) {
-				t.Errorf("graph holds devices %v, want %v - the withdrawn device should be gone", got, want)
+			if got := world.devicesIn(t, graph); !reflect.DeepEqual(got, want) {
+				t.Errorf("graph reaches devices %v, want %v - the withdrawn device should be gone", got, want)
 			}
-			assertParent(t, graph, sub.id, main.id, "the remaining structure is untouched")
+			if got := graphs.ThingIdsIn(graph); len(got) != len(meters) {
+				t.Errorf("graph holds thing nodes %v, want all %v meters to stay", got, len(meters))
+			}
+			if got := world.thingsLinkedTo(t, small.id); len(got) != 1 {
+				t.Errorf("the withdrawn device is linked to %v things, want its one meter and no new one", len(got))
+			}
+			assertParent(t, world, graph, main.id, "", "the remaining structure is untouched")
+			assertParent(t, world, graph, sub.id, main.id, "the remaining structure is untouched")
+			assertParent(t, world, graph, small.id, main.id, "the meter of the withdrawn device stays where it was")
 			assertGroupPermission(t, world, graph.Id, groupPath, permissions.PermissionsMap{
 				Read: true, Write: true, Execute: true,
 			})
@@ -152,10 +202,12 @@ func TestAgainstTheRealPlatform(t *testing.T) {
 			// compares against, a pass writes again - and since every write
 			// produces a command this service consumes, the loop never ends.
 			before := world.defaultGraph(t)
+			thingsBefore := world.allThings(t)
 			world.resetWrites()
 			world.full(t)
 			world.full(t)
 			after := world.defaultGraph(t)
+			thingsAfter := world.allThings(t)
 
 			// Counted rather than only compared: writing the same content
 			// again leaves the stored graph equal and the loop endless.
@@ -167,6 +219,13 @@ func TestAgainstTheRealPlatform(t *testing.T) {
 				t.Errorf("two further passes changed the stored graph, so reconciliation is not idempotent against the real repository:\nbefore: %v\nafter:  %v",
 					pretty(before), pretty(after))
 			}
+			// Things are written too, though not counted above: a pass that
+			// creates a meter again or ends a link again is the same loop one
+			// level down.
+			if !reflect.DeepEqual(thingsBefore, thingsAfter) {
+				t.Errorf("two further passes changed the things, so a pass still creates or ends something:\nbefore: %v\nafter:  %v",
+					thingsBefore, thingsAfter)
+			}
 		}},
 
 		{"a user's edit survives a pass", true, func(t *testing.T) {
@@ -175,16 +234,17 @@ func TestAgainstTheRealPlatform(t *testing.T) {
 			// Move the sub-meter from under the main meter to the root, the
 			// way a user correcting the guess would, and write it back
 			// through the repository rather than into a fake.
+			subNode, _ := world.meterOf(t, graph, sub.id)
 			moved := false
 			for i, edge := range graph.Edges {
-				if edge.FromNodeId == sub.id {
+				if edge.FromNodeId == subNode.Id {
 					graph.Edges[i].ToNodeId = model.RootNodeId
-					graph.Edges[i].Id = "user-edit-" + sub.id
+					graph.Edges[i].Id = "user-edit-" + subNode.Id
 					moved = true
 				}
 			}
 			if !moved {
-				t.Fatalf("no edge leaves the sub-meter's node, nothing to move")
+				t.Fatalf("no edge leaves the sub-meter's node %v, nothing to move", subNode.Id)
 			}
 			if err := graph.Valid(); err != nil {
 				t.Fatalf("the edited graph is invalid before it is written: %v", err)
@@ -199,9 +259,9 @@ func TestAgainstTheRealPlatform(t *testing.T) {
 			if err := after.Valid(); err != nil {
 				t.Fatalf("the graph is invalid after the pass: %v", err)
 			}
-			assertParent(t, after, sub.id, model.RootNodeId,
-				"the service never re-parents an edge a user moved")
-			assertParent(t, after, main.id, model.RootNodeId, "the main meter is where it was")
+			assertParent(t, world, after, sub.id, "", "the service never re-parents an edge a user moved")
+			assertParent(t, world, after, main.id, "", "the main meter is where it was")
+			assertParent(t, world, after, small.id, main.id, "the meter of the withdrawn device is where it was")
 		}},
 
 		{"assumption: the attributes filter and the admin bypass", false, func(t *testing.T) {
@@ -444,28 +504,30 @@ func broken(t *testing.T, assumption string, format string, args ...any) {
 	t.Errorf("ASSUMPTION BROKEN: %v\n  %v", assumption, fmt.Sprintf(format, args...))
 }
 
-// assertParent checks the node a device's node points at. Structure rather
+// assertParent checks the node a device's meter points at. Structure rather
 // than edge ids: a removal reroutes edges through the model's own id provider,
-// so no edge id survives one.
-func assertParent(t *testing.T, graph platform.Graph, deviceId string, wantParent string, why string) {
+// so no edge id survives one. The device is resolved to its meter's node
+// through the things API; wantParentDevice is the device whose meter node the
+// edge has to end at, or "" for the root.
+func assertParent(t *testing.T, world *stack, graph platform.Graph, deviceId string, wantParentDevice string, why string) {
 	t.Helper()
-	nodeId := ""
-	for _, node := range graph.Nodes {
-		if node.ResourceId == deviceId {
-			nodeId = node.Id
-			break
-		}
-	}
-	if nodeId == "" {
-		t.Errorf("%v: device %v has no node in graph %v", why, deviceId, graph.Id)
+	node, _, found := world.findMeter(t, graph, deviceId)
+	if !found {
+		t.Errorf("%v: device %v has no meter node in graph %v", why, deviceId, graph.Id)
 		return
 	}
-	if nodeId != deviceId {
-		t.Errorf("node of device %v has id %v: the graph view looks a node's device up by node id", deviceId, nodeId)
+	wantParent := model.RootNodeId
+	if wantParentDevice != "" {
+		parentNode, _, parentFound := world.findMeter(t, graph, wantParentDevice)
+		if !parentFound {
+			t.Errorf("%v: device %v, the expected parent, has no meter node in graph %v", why, wantParentDevice, graph.Id)
+			return
+		}
+		wantParent = parentNode.Id
 	}
 	parents := []string{}
 	for _, edge := range graph.Edges {
-		if edge.FromNodeId == nodeId {
+		if edge.FromNodeId == node.Id {
 			parents = append(parents, edge.ToNodeId)
 			if edge.Weight != model.FullWeight {
 				t.Errorf("edge %v has weight %v, want %v - in a tree an edge carries its whole node",
@@ -474,12 +536,143 @@ func assertParent(t *testing.T, graph platform.Graph, deviceId string, wantParen
 		}
 	}
 	if len(parents) != 1 {
-		t.Errorf("%v: device %v points at %v, want exactly one parent", why, deviceId, parents)
+		t.Errorf("%v: the meter node %v of device %v points at %v, want exactly one parent", why, node.Id, deviceId, parents)
 		return
 	}
 	if parents[0] != wantParent {
-		t.Errorf("%v: device %v hangs under %v, want %v", why, deviceId, parents[0], wantParent)
+		t.Errorf("%v: the meter node %v of device %v hangs under %v, want %v", why, node.Id, deviceId, parents[0], wantParent)
 	}
+}
+
+// findMeter resolves a device to the node it is placed as: a node of resource
+// type thing, pointing at a thing the device has a link to - open or ended - and
+// present in the graph. A device with such a node twice is reported as not found
+// after the error, because there is no one answer.
+func (this *stack) findMeter(t *testing.T, graph platform.Graph, deviceId string) (platform.Node, things.Thing, bool) {
+	t.Helper()
+	linked := this.thingsLinkedTo(t, deviceId)
+	var foundNode platform.Node
+	var foundThing things.Thing
+	count := 0
+	for _, thing := range linked {
+		for _, node := range graph.Nodes {
+			if node.ResourceType == model.ResourceTypeThing && node.ResourceId == thing.Id {
+				foundNode, foundThing = node, thing
+				count++
+			}
+		}
+	}
+	if count > 1 {
+		t.Errorf("device %v is placed by %v thing nodes in graph %v, want one", deviceId, count, graph.Id)
+		return platform.Node{}, things.Thing{}, false
+	}
+	return foundNode, foundThing, count == 1
+}
+
+// meterOf is findMeter for a device that has to be there.
+func (this *stack) meterOf(t *testing.T, graph platform.Graph, deviceId string) (platform.Node, things.Thing) {
+	t.Helper()
+	node, thing, found := this.findMeter(t, graph, deviceId)
+	if !found {
+		t.Fatalf("device %v has no meter node in graph %v", deviceId, graph.Id)
+	}
+	return node, thing
+}
+
+// assertMeter checks what the contract says about the meter a device was
+// placed as: a node of resource type thing in the thing's id, no attributes on
+// the node, a meter thing named after the device, owned by the service user and
+// carrying the group's id, with one open link to the device, shared with the
+// group read, write and execute.
+func (this *stack) assertMeter(t *testing.T, graph platform.Graph, device meter) {
+	t.Helper()
+	node, thing, found := this.findMeter(t, graph, device.id)
+	if !found {
+		t.Errorf("device %v has no meter node in graph %v", device.id, graph.Id)
+		return
+	}
+	if node.Id != node.ResourceId || node.Id != thing.Id {
+		t.Errorf("meter node of device %v is %v / %v, want the thing's id %v as node id and resource id",
+			device.id, node.Id, node.ResourceId, thing.Id)
+	}
+	if len(node.Attributes) != 0 {
+		t.Errorf("meter node %v carries attributes %+v, want none", node.Id, node.Attributes)
+	}
+	if thing.Kind != things.KindMeter {
+		t.Errorf("thing %v of device %v is of kind %q, want %q", thing.Id, device.id, thing.Kind, things.KindMeter)
+	}
+	if thing.Name != device.name {
+		t.Errorf("thing %v is named %q, want the device's name %q", thing.Id, thing.Name, device.name)
+	}
+	if thing.OwnerId != this.serviceUserId {
+		t.Errorf("thing %v is owned by %q, want the service user %q", thing.Id, thing.OwnerId, this.serviceUserId)
+	}
+	if got := graphs.AttributeOf(thing.Attributes, model.AttrKeycloakGroupId); got != groupId {
+		t.Errorf("thing %v carries %v %q, want %q: a later pass recognises its own meters by it",
+			thing.Id, model.AttrKeycloakGroupId, got, groupId)
+	}
+	if len(thing.DeviceLinks) != 1 || thing.DeviceLinks[0].DeviceId != device.id || !this.linkOpen(thing.DeviceLinks[0]) {
+		t.Errorf("thing %v has links %+v, want one open link to device %v", thing.Id, thing.DeviceLinks, device.id)
+	}
+	resource, err, code := this.permissions.GetResource(this.token, thingTopic, thing.Id)
+	if err != nil {
+		t.Errorf("unable to read the permissions of thing %v (%v): %v", thing.Id, code, err)
+		return
+	}
+	want := permissions.PermissionsMap{Read: true, Write: true, Execute: true}
+	if got := resource.GroupPermissions[groupPath]; got != want {
+		t.Errorf("thing %v grants %v %+v, want %+v: a member who reads the graph has to read its meters",
+			thing.Id, groupPath, got, want)
+	}
+}
+
+// linkOpen is whether a device link holds now or later, the way the service
+// reads it: no end, or an end still ahead.
+func (this *stack) linkOpen(link things.Link) bool {
+	return link.Until == nil || link.Until.After(time.Now())
+}
+
+// thingsLinkedTo lists the things a device has a link to, open or ended, by
+// asking the repository for exactly that.
+func (this *stack) thingsLinkedTo(t *testing.T, deviceId string) []things.Thing {
+	t.Helper()
+	found, err, code := this.things.List(this.ctx, this.token, nil, []string{deviceId})
+	if err != nil {
+		t.Fatalf("unable to list the things of device %v (%v): %v", deviceId, code, err)
+	}
+	return found
+}
+
+// allThings is every thing the token may read, in id order.
+func (this *stack) allThings(t *testing.T) []things.Thing {
+	t.Helper()
+	found, err, code := this.things.List(this.ctx, this.token, nil, nil)
+	if err != nil {
+		t.Fatalf("unable to list the things (%v): %v", code, err)
+	}
+	return found
+}
+
+// devicesIn is every device a graph accounts for: those with a device node and
+// those with an open link to a thing that has a node in it. Sorted.
+func (this *stack) devicesIn(t *testing.T, graph platform.Graph) []string {
+	t.Helper()
+	result := graphs.DeviceIdsIn(graph)
+	if thingIds := graphs.ThingIdsIn(graph); len(thingIds) > 0 {
+		found, err, code := this.things.List(this.ctx, this.token, thingIds, nil)
+		if err != nil {
+			t.Fatalf("unable to list the things of graph %v (%v): %v", graph.Id, code, err)
+		}
+		for _, thing := range found {
+			for _, link := range thing.DeviceLinks {
+				if this.linkOpen(link) && !slices.Contains(result, link.DeviceId) {
+					result = append(result, link.DeviceId)
+				}
+			}
+		}
+	}
+	slices.Sort(result)
+	return result
 }
 
 // assertGroupPermission reads a graph's sharing back out of permissions-v2.
