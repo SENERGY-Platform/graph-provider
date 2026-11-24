@@ -24,9 +24,11 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	devicerepomodel "github.com/SENERGY-Platform/device-repository/lib/model"
 	"github.com/SENERGY-Platform/graph-provider/pkg/model"
+	"github.com/SENERGY-Platform/graph-provider/pkg/things"
 	platform "github.com/SENERGY-Platform/models/go/models"
 	permissions "github.com/SENERGY-Platform/permissions-v2/pkg/client"
 )
@@ -166,7 +168,7 @@ func TestDefaultsKeysByGroupAndFiltersByKeyOnly(t *testing.T) {
 		// A graph a user made: no group attribute, so not ours.
 		{Id: "g3", Owner: "someone", Nodes: []platform.Node{{Id: "root", ResourceType: model.ResourceTypeCustom}}},
 	}}
-	store := New(repository, &fakePermissions{}, "token", graphTopic, serviceUsr, true)
+	store := New(repository, &fakePermissions{}, nil, "token", graphTopic, "things", serviceUsr, true)
 
 	found, err := store.Defaults(context.Background())
 	if err != nil {
@@ -221,7 +223,7 @@ func TestDefaultsPagesAndKeepsTheLowerIdOnDuplicates(t *testing.T) {
 		validGraph("zzz", "/contested", "later"),
 		validGraph("aaa", "/contested", "earlier"),
 	)
-	store := New(repository, &fakePermissions{}, "token", graphTopic, serviceUsr, true)
+	store := New(repository, &fakePermissions{}, nil, "token", graphTopic, "things", serviceUsr, true)
 
 	found, err := store.Defaults(context.Background())
 	if err != nil {
@@ -238,7 +240,7 @@ func TestDefaultsPagesAndKeepsTheLowerIdOnDuplicates(t *testing.T) {
 
 func TestSaveRefusesAnInvalidGraph(t *testing.T) {
 	repository := &fakeRepository{}
-	store := New(repository, &fakePermissions{}, "token", graphTopic, serviceUsr, true)
+	store := New(repository, &fakePermissions{}, nil, "token", graphTopic, "things", serviceUsr, true)
 
 	// Two nodes without outputs: the model demands exactly one.
 	broken := validGraph("", "/acme", "acme")
@@ -255,7 +257,7 @@ func TestSaveRefusesAnInvalidGraph(t *testing.T) {
 func TestKillSwitchBlocksEveryWrite(t *testing.T) {
 	repository := &fakeRepository{}
 	perms := &fakePermissions{resources: map[string]permissions.Resource{"g1": ownedResource("g1")}}
-	store := New(repository, perms, "token", graphTopic, serviceUsr, false)
+	store := New(repository, perms, nil, "token", graphTopic, "things", serviceUsr, false)
 
 	if _, err := store.Save(context.Background(), validGraph("g1", "/acme", "acme")); !errors.Is(err, ErrReadOnly) {
 		t.Errorf("expected ErrReadOnly, got %v", err)
@@ -270,7 +272,7 @@ func TestKillSwitchBlocksEveryWrite(t *testing.T) {
 
 func TestShareGrantsReadWriteExecuteButNotAdministrate(t *testing.T) {
 	perms := &fakePermissions{resources: map[string]permissions.Resource{"g1": ownedResource("g1")}}
-	store := New(&fakeRepository{}, perms, "token", graphTopic, serviceUsr, true)
+	store := New(&fakeRepository{}, perms, nil, "token", graphTopic, "things", serviceUsr, true)
 
 	changed, err := store.Share(context.Background(), "g1", "/acme")
 	if err != nil {
@@ -296,7 +298,7 @@ func TestShareIsSkippedWhenItWouldChangeNothing(t *testing.T) {
 	resource := ownedResource("g1")
 	resource.GroupPermissions["/acme"] = permissions.PermissionsMap{Read: true, Write: true, Execute: true}
 	perms := &fakePermissions{resources: map[string]permissions.Resource{"g1": resource}}
-	store := New(&fakeRepository{}, perms, "token", graphTopic, serviceUsr, true)
+	store := New(&fakeRepository{}, perms, nil, "token", graphTopic, "things", serviceUsr, true)
 
 	changed, err := store.Share(context.Background(), "g1", "/acme")
 	if err != nil {
@@ -317,7 +319,7 @@ func TestUnshareRemovesOnlyThatGroup(t *testing.T) {
 	resource.GroupPermissions["/acme"] = permissions.PermissionsMap{Read: true, Write: true, Execute: true}
 	resource.GroupPermissions["/beta"] = permissions.PermissionsMap{Read: true}
 	perms := &fakePermissions{resources: map[string]permissions.Resource{"g1": resource}}
-	store := New(&fakeRepository{}, perms, "token", graphTopic, serviceUsr, true)
+	store := New(&fakeRepository{}, perms, nil, "token", graphTopic, "things", serviceUsr, true)
 
 	changed, err := store.Unshare(context.Background(), "g1", "/acme")
 	if err != nil {
@@ -349,7 +351,7 @@ func TestUnshareRemovesOnlyThatGroup(t *testing.T) {
 
 func TestShareFailsWhenTheGraphHasNoPermissionResource(t *testing.T) {
 	perms := &fakePermissions{resources: map[string]permissions.Resource{}}
-	store := New(&fakeRepository{}, perms, "token", graphTopic, serviceUsr, true)
+	store := New(&fakeRepository{}, perms, nil, "token", graphTopic, "things", serviceUsr, true)
 
 	if _, err := store.Share(context.Background(), "missing", "/acme"); err == nil {
 		t.Error("a graph without a permission resource cannot be shared, and inventing an administrator would be worse")
@@ -407,7 +409,7 @@ func TestRootOfAndDeviceIdsInOnARealTree(t *testing.T) {
 }
 
 func TestListErrorsAreReturned(t *testing.T) {
-	store := New(&fakeRepository{err: errors.New("boom")}, &fakePermissions{}, "token", graphTopic, serviceUsr, true)
+	store := New(&fakeRepository{err: errors.New("boom")}, &fakePermissions{}, nil, "token", graphTopic, "things", serviceUsr, true)
 	if _, err := store.Defaults(context.Background()); err == nil {
 		t.Error("a repository error must not be swallowed")
 	}
@@ -422,7 +424,7 @@ func TestDefaultsIndexesAnIdlessGraphByPath(t *testing.T) {
 		return a.Key == model.AttrKeycloakGroupId
 	})
 	repository := &fakeRepository{graphs: []platform.Graph{legacy}}
-	store := New(repository, &fakePermissions{}, "token", graphTopic, serviceUsr, true)
+	store := New(repository, &fakePermissions{}, nil, "token", graphTopic, "things", serviceUsr, true)
 
 	found, err := store.Defaults(context.Background())
 	if err != nil {
@@ -434,4 +436,186 @@ func TestDefaultsIndexesAnIdlessGraphByPath(t *testing.T) {
 	if found.ByPath["/acme"].Id != "old" {
 		t.Errorf("expected the graph indexed by path, got %+v", found.ByPath)
 	}
+}
+
+// --- meter things ---------------------------------------------------------------
+
+type fakeThings struct {
+	all     []things.Thing
+	listed  [][]string
+	created []things.Thing
+}
+
+func (this *fakeThings) List(_ context.Context, _ string, ids []string, deviceIds []string) ([]things.Thing, error, int) {
+	this.listed = append(this.listed, ids)
+	result := []things.Thing{}
+	for _, thing := range this.all {
+		if ids != nil && !slices.Contains(ids, thing.Id) {
+			continue
+		}
+		result = append(result, thing)
+	}
+	return result, nil, http.StatusOK
+}
+
+func (this *fakeThings) Create(_ context.Context, _ string, thing things.Thing) (things.Thing, error, int) {
+	thing.Id = "new" + strconv.Itoa(len(this.created)+1)
+	this.created = append(this.created, thing)
+	this.all = append(this.all, thing)
+	return thing, nil, http.StatusOK
+}
+
+func (this *fakeThings) AddDeviceLink(context.Context, string, string, things.LinkCreate) (things.Thing, error, int) {
+	return things.Thing{}, nil, http.StatusOK
+}
+
+func (this *fakeThings) ChangeGraph(context.Context, string, platform.Graph, time.Time) (platform.Graph, error, int) {
+	return platform.Graph{}, nil, http.StatusOK
+}
+
+func (this *fakeThings) EndDeviceLink(context.Context, string, string, string, time.Time) (things.Thing, error, int) {
+	return things.Thing{}, nil, http.StatusOK
+}
+
+func (this *fakeThings) Delete(context.Context, string, string) (error, int) {
+	return nil, http.StatusOK
+}
+
+func graphWithThingNode(thingId string) platform.Graph {
+	graph := validGraph("g1", "/acme", "acme")
+	graph.Nodes = append(graph.Nodes, platform.Node{Id: thingId, ResourceType: model.ResourceTypeThing, ResourceId: thingId})
+	graph.Edges = append(graph.Edges, platform.Edge{Id: "e", FromNodeId: thingId, ToNodeId: "root", Weight: 100})
+	return graph
+}
+
+func TestRootOfIgnoresDeviceAndThingNodes(t *testing.T) {
+	// The projection of a graph in the middle of an edit: nodes without an
+	// outgoing edge that are not the top.
+	graph := validGraph("g1", "/acme", "acme")
+	graph.Nodes = append(graph.Nodes,
+		platform.Node{Id: "m", ResourceType: model.ResourceTypeThing, ResourceId: "m"},
+		platform.Node{Id: "d", ResourceType: platform.GraphResourceTypeDevice, ResourceId: "d"},
+	)
+	root, ok := RootOf(graph)
+	if !ok || root.Id != "root" {
+		t.Errorf("expected the custom root, got %+v (%v)", root, ok)
+	}
+	if _, ok := RootOf(platform.Graph{Nodes: graph.Nodes[1:]}); ok {
+		t.Error("a graph with only device and thing nodes has no root")
+	}
+}
+
+func TestPlacedCountsOpenLinksOfTheGraphsThingsOnly(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+	repo := &fakeThings{all: []things.Thing{{
+		Id: "m1",
+		DeviceLinks: []things.Link{
+			{Id: "a", DeviceId: "ended", From: now.Add(-48 * time.Hour), Until: &past},
+			{Id: "b", DeviceId: "open", From: now.Add(-time.Hour)},
+			{Id: "c", DeviceId: "ending", From: now.Add(-time.Hour), Until: &future},
+			{Id: "d", DeviceId: "coming", From: future},
+		},
+	}, {
+		Id:          "elsewhere",
+		DeviceLinks: []things.Link{{Id: "e", DeviceId: "other", From: past}},
+	}}}
+	graph := graphWithThingNode("m1")
+	graph.Nodes = append(graph.Nodes, platform.Node{Id: "dev", ResourceType: platform.GraphResourceTypeDevice, ResourceId: "dev"})
+	graph.Edges = append(graph.Edges, platform.Edge{Id: "e2", FromNodeId: "dev", ToNodeId: "root", Weight: 100})
+	store := New(&fakeRepository{}, &fakePermissions{}, repo, "token", graphTopic, "things", serviceUsr, true)
+
+	placed, err := store.Placed(context.Background(), graph, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"coming", "dev", "ending", "open"}; !slices.Equal(placed.DeviceIds, want) {
+		t.Errorf("expected %v, got %v", want, placed.DeviceIds)
+	}
+	if got := repo.listed[0]; !slices.Equal(got, []string{"m1"}) {
+		t.Errorf("only the graph's own things are asked for, got %v", got)
+	}
+	if placed.ThingDevices["m1"] != "coming" && placed.ThingDevices["m1"] != "ending" && placed.ThingDevices["m1"] != "open" {
+		t.Errorf("the thing must map to a device with an open link, got %q", placed.ThingDevices["m1"])
+	}
+}
+
+func TestPlacedWithoutThingNodesAsksForNothing(t *testing.T) {
+	repo := &fakeThings{}
+	store := New(&fakeRepository{}, &fakePermissions{}, repo, "token", graphTopic, "things", serviceUsr, true)
+	if _, err := store.Placed(context.Background(), validGraph("g1", "/acme", "acme"), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.listed) != 0 {
+		t.Errorf("no request expected, got %v", repo.listed)
+	}
+}
+
+func TestPlaceMetersWithWritingOffCreatesNothing(t *testing.T) {
+	repo := &fakeThings{}
+	store := New(&fakeRepository{}, &fakePermissions{}, repo, "token", graphTopic, "things", serviceUsr, false)
+	meters, err := store.PlaceMeters(context.Background(), model.Group{Id: "kc", Path: "/acme"},
+		[]model.Device{{Id: "d1", Name: "a"}}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.created) != 0 || meters.ThingIds["d1"] != PlaceholderThingId("d1") {
+		t.Errorf("expected a placeholder and no thing, got %+v / %+v", meters, repo.created)
+	}
+}
+
+func TestPlaceMetersNamesTheThingAfterTheDeviceAndMarksTheGroup(t *testing.T) {
+	repo := &fakeThings{}
+	perms := &fakePermissions{resources: map[string]permissions.Resource{"new1": ownedResource("new1")}}
+	store := New(&fakeRepository{}, perms, repo, "token", graphTopic, "things", serviceUsr, true)
+	_, err := store.PlaceMeters(context.Background(), model.Group{Id: "kc", Path: "/acme"},
+		[]model.Device{{Id: "d1"}}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.created) != 1 {
+		t.Fatalf("expected one thing, got %v", repo.created)
+	}
+	created := repo.created[0]
+	if created.Name != "d1" || created.Kind != things.KindMeter || created.OwnerId != serviceUsr ||
+		AttributeOf(created.Attributes, model.AttrKeycloakGroupId) != "kc" {
+		t.Errorf("unexpected thing %+v", created)
+	}
+}
+
+func TestNodeIdentityKept(t *testing.T) {
+	before := graphWithThingNode("m1")
+	after := graphWithThingNode("m1")
+	if err := NodeIdentityKept(before, after); err != nil {
+		t.Error(err)
+	}
+	after.Nodes[1].ResourceType = platform.GraphResourceTypeDevice
+	if err := NodeIdentityKept(before, after); err == nil {
+		t.Error("a node turned into a device must be refused")
+	}
+	after = graphWithThingNode("m1")
+	after.Nodes[1].ResourceId = "m2"
+	if err := NodeIdentityKept(before, after); err == nil {
+		t.Error("a node pointing at another thing must be refused")
+	}
+	// A removed or added node is not an identity change.
+	if err := NodeIdentityKept(before, validGraph("g1", "/acme", "acme")); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSaveNamesAConflict(t *testing.T) {
+	repo := &conflictRepository{}
+	store := New(repo, &fakePermissions{}, nil, "token", graphTopic, "things", serviceUsr, true)
+	_, err := store.Save(context.Background(), validGraph("g1", "/acme", "acme"))
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected ErrConflict, got %v", err)
+	}
+}
+
+type conflictRepository struct{ fakeRepository }
+
+func (this *conflictRepository) SetGraph(_ string, graph platform.Graph) (platform.Graph, error, int) {
+	return graph, errors.New("revision changed"), http.StatusConflict
 }

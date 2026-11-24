@@ -45,6 +45,7 @@ import (
 	"github.com/SENERGY-Platform/graph-provider/pkg/graphs"
 	"github.com/SENERGY-Platform/graph-provider/pkg/model"
 	"github.com/SENERGY-Platform/graph-provider/pkg/structure"
+	"github.com/SENERGY-Platform/graph-provider/pkg/things"
 	platform "github.com/SENERGY-Platform/models/go/models"
 )
 
@@ -82,6 +83,12 @@ type Reconciler struct {
 
 	now func() time.Time
 
+	// absent counts, per link, the consecutive passes in which the link's device
+	// was no longer in its group. Only in memory: after a restart a departed
+	// device needs two passes again, which delays the end of its link and loses
+	// nothing. Touched only by the goroutine that runs passes.
+	absent map[string]int
+
 	// requested holds the group paths a pass has been asked for, and whether
 	// somebody asked for all of them. Kept apart from events.Pending because
 	// these are wishes about groups, not about resource ids.
@@ -100,6 +107,7 @@ func New(c *cache.Cache, store *graphs.Store, consumption Readings, pending *eve
 		config:      cfg,
 		logger:      logger,
 		now:         time.Now,
+		absent:      map[string]int{},
 		requested:   map[string]bool{},
 		wake:        make(chan struct{}, 1),
 	}
@@ -495,9 +503,22 @@ func (this *Reconciler) create(ctx context.Context, group model.Group, devices [
 	if err != nil {
 		return err
 	}
+
+	// Every device becomes a meter thing, and the things exist before the graph
+	// that points at them. Any failure ends the pass for this group: the first
+	// graph is the one place the whole heuristic runs, and a graph written
+	// without some of its devices would have them attached one by one later.
+	// What was created is not lost, the next pass finds each thing by its link.
+	meters, err := this.store.PlaceMeters(ctx, group, devices, this.now())
+	if err != nil {
+		return fmt.Errorf("unable to place the devices as meters: %w", err)
+	}
+	this.logMeters(group, "", meters)
+
 	graph, placements, err := structure.Build(this.config.ServiceUserId, group, devices, readings, structure.Options{
 		Tolerance:      this.config.Tolerance,
 		NoFlowNodeName: this.config.NoFlowNodeName,
+		Meters:         meters.ThingIds,
 	})
 	if err != nil {
 		return fmt.Errorf("unable to build graph: %w", err)
@@ -508,6 +529,7 @@ func (this *Reconciler) create(ctx context.Context, group model.Group, devices [
 		Group:      group,
 		Graph:      graph,
 		Devices:    devices,
+		Meters:     metersOf(meters.ThingIds, nil),
 		NoReading:  unplaced,
 		Readings:   readings,
 		Placements: placements,
@@ -525,6 +547,7 @@ func (this *Reconciler) create(ctx context.Context, group model.Group, devices [
 				"group", group.Path, "devices", len(devices))
 			return nil
 		}
+		this.logConflict(err, group.Path, "")
 		return err
 	}
 	this.logger.Info("created default graph", "group", group.Path, "graph", saved.Id, "devices", len(devices))
@@ -553,8 +576,16 @@ func (this *Reconciler) update(ctx context.Context, group model.Group, devices [
 	previousPath := graphs.GroupPathOf(existing)
 	moved := previousPath != "" && previousPath != group.Path
 
+	// A device is in the graph as a device node or through an open link of a
+	// thing with a node in it. Only the first kind is ever removed below: a
+	// meter thing stays when its device leaves the group, because it is the
+	// measuring point and carries the history of what was measured there.
+	placed, err := this.store.Placed(ctx, existing, this.now())
+	if err != nil {
+		return err
+	}
 	inGraph := map[string]bool{}
-	for _, id := range graphs.DeviceIdsIn(existing) {
+	for _, id := range placed.DeviceIds {
 		inGraph[id] = true
 	}
 	wanted := map[string]bool{}
@@ -586,6 +617,9 @@ func (this *Reconciler) update(ctx context.Context, group model.Group, devices [
 			}
 		}
 	}
+	if err := this.endDepartedLinks(ctx, group, existing.Id, wanted, moved, placed); err != nil {
+		return err
+	}
 	slices.Sort(departed)
 	for _, id := range departed {
 		removed, err := structure.Detach(&next, id)
@@ -616,6 +650,7 @@ func (this *Reconciler) update(ctx context.Context, group model.Group, devices [
 	}
 	var readings map[model.ReadingKey]model.Reading
 	var placements []model.Placement
+	newMeters := map[string]string{}
 	if len(missing) > 0 {
 		// Readings for the whole group, not only the arrivals: placing a new
 		// device needs the capacity of the meters already in the graph. This
@@ -627,13 +662,28 @@ func (this *Reconciler) update(ctx context.Context, group model.Group, devices [
 			return err
 		}
 		unplaced = withoutReading(missing, readings)
+
+		// The new devices land as meter things. A failure ends the pass before
+		// the graph is written; what was created is adopted by the next pass.
+		meters, err := this.store.PlaceMeters(ctx, group, missing, this.now())
+		if err != nil {
+			return fmt.Errorf("unable to place the new devices as meters: %w", err)
+		}
+		this.logMeters(group, existing.Id, meters)
+		newMeters = meters.ThingIds
+		attachOptions := structure.Options{
+			Tolerance:      this.config.Tolerance,
+			NoFlowNodeName: this.config.NoFlowNodeName,
+			Meters:         newMeters,
+			ThingDevices:   placed.ThingDevices,
+		}
 		for _, device := range missing {
 			// TODO(structure-placements): structure.Attach is expected to
 			// also return the []model.Placement it decided for this device,
 			// once pkg/structure exposes the placement diagnostics the report
 			// renderer needs (see pkg/plan). Written against that target
 			// signature; will not compile until pkg/structure lands it.
-			attached, err := structure.Attach(&next, device, readings, structure.Options{Tolerance: this.config.Tolerance, NoFlowNodeName: this.config.NoFlowNodeName})
+			attached, err := structure.Attach(&next, device, readings, attachOptions)
 			if err != nil {
 				return fmt.Errorf("unable to attach device %v: %w", device.Id, err)
 			}
@@ -672,21 +722,38 @@ func (this *Reconciler) update(ctx context.Context, group model.Group, devices [
 		if len(missing) > 0 {
 			notes = append([]string{plural(len(missing), "device") + " added"}, notes...)
 		}
+		// A write must not turn an existing node into another resource: the
+		// repository answers that with a 400, a different resource being a
+		// different node. Nothing edits a node in place, so this only fires on
+		// a bug, and then before the request instead of after it.
+		if err := graphs.NodeIdentityKept(existing, next); err != nil {
+			return fmt.Errorf("refusing to write graph %v: %w", existing.Id, err)
+		}
 		this.plan(model.PlannedChange{
 			Action:     model.ActionUpdate,
 			Group:      group,
 			Graph:      next,
 			Devices:    devices,
+			Meters:     metersOf(newMeters, placed.ThingDevices),
 			NoReading:  unplaced,
 			Readings:   readings,
 			Placements: placements,
 			Note:       strings.Join(notes, ", "),
 		})
-		if _, err := this.store.Save(ctx, next); err != nil {
+		var saveErr error
+		if removedCount > 0 {
+			// A removal is a change at now, so the node ends and its history
+			// stays; additions in the same write ride along from now on.
+			_, saveErr = this.store.SaveRemoval(ctx, next, this.now())
+		} else {
+			_, saveErr = this.store.Save(ctx, next)
+		}
+		if err := saveErr; err != nil {
 			// See create: a configured kill switch does not fail the pass. The
 			// sharing below is still checked, because it is a separate write and
 			// a reader of the report wants to know about both.
 			if !errors.Is(err, graphs.ErrReadOnly) {
+				this.logConflict(err, group.Path, existing.Id)
 				return err
 			}
 			this.logger.Info("writing is disabled, default graph not updated",
@@ -711,10 +778,140 @@ func (this *Reconciler) update(ctx context.Context, group model.Group, devices [
 		}); err != nil {
 			return err
 		}
+		if err := this.moveThingSharing(ctx, group, previousPath, placed); err != nil {
+			return err
+		}
 		this.logger.Info("group moved, sharing followed",
 			"graph", existing.Id, "from", previousPath, "to", group.Path)
 	}
 	return nil
+}
+
+// absentPasses is how many consecutive passes a device has to be missing from
+// its group before the link of its meter is ended.
+const absentPasses = 2
+
+// endDepartedLinks ends, at now, the open link of a device that left the group
+// on the group's own meter. The thing, its node and the history stay.
+//
+// A device missing from the group looks the same whether it left or a
+// permissions read glitched, and a link ended by mistake is replaced by a new
+// meter, which cuts the history. So the link is ended only when the device was
+// missing in two consecutive passes over this graph; a pass in which it is back
+// resets the count, and so does a pass after a group rename, in which every
+// device looks gone. Links on things this service did not make for the group
+// are never touched.
+func (this *Reconciler) endDepartedLinks(ctx context.Context, group model.Group, graphId string, wanted map[string]bool, moved bool, placed graphs.Placed) error {
+	prefix := graphId + "|"
+	seen := map[string]bool{}
+	if !moved {
+		now := this.now()
+		thingIds := make([]string, 0, len(placed.Things))
+		for id := range placed.Things {
+			thingIds = append(thingIds, id)
+		}
+		slices.Sort(thingIds)
+		for _, id := range thingIds {
+			thing := placed.Things[id]
+			if !this.store.IsOwnMeter(thing, group) {
+				continue
+			}
+			for _, link := range thing.DeviceLinks {
+				if !link.Open(now) || wanted[link.DeviceId] {
+					continue
+				}
+				key := prefix + link.Id
+				seen[key] = true
+				this.absent[key]++
+				if this.absent[key] < absentPasses {
+					continue
+				}
+				if err := this.store.EndLink(ctx, thing.Id, link.Id, now); err != nil {
+					if errors.Is(err, graphs.ErrReadOnly) {
+						continue
+					}
+					return err
+				}
+				delete(this.absent, key)
+				delete(seen, key)
+				this.logger.Info("ended the link of a device that left the group",
+					"group", group.Path, "graph", graphId, "meter", thing.Id, "device", link.DeviceId)
+			}
+		}
+	}
+	for key := range this.absent {
+		if strings.HasPrefix(key, prefix) && !seen[key] {
+			delete(this.absent, key)
+		}
+	}
+	return nil
+}
+
+// moveThingSharing makes the meter things this service made for the group
+// follow a rename, as the graph does.
+//
+// Only on a rename, not every pass: checking each thing's rights on every pass
+// would cost one permissions request per meter per pass, and the echo of every
+// graph write is a pass. A thing whose sharing was changed by hand is therefore
+// not restored, see known-limitations.md.
+func (this *Reconciler) moveThingSharing(ctx context.Context, group model.Group, previousPath string, placed graphs.Placed) error {
+	ids := make([]string, 0, len(placed.Things))
+	for id, thing := range placed.Things {
+		if thing.Kind == things.KindMeter && thing.OwnerId == this.config.ServiceUserId &&
+			graphs.AttributeOf(thing.Attributes, model.AttrKeycloakGroupId) == group.Id {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		if _, err := this.store.ShareThing(ctx, id, group.Path); err != nil {
+			if errors.Is(err, graphs.ErrReadOnly) {
+				return nil
+			}
+			return fmt.Errorf("unable to share meter %v with the renamed group: %w", id, err)
+		}
+		if _, err := this.store.UnshareThing(ctx, id, previousPath); err != nil {
+			return fmt.Errorf("unable to withdraw the old group's access to meter %v: %w", id, err)
+		}
+	}
+	return nil
+}
+
+// metersOf is the thing-to-device map the report needs, from the things this
+// pass placed (device to thing) and those the graph already had (thing to
+// device).
+func metersOf(placed map[string]string, existing map[string]string) map[string]string {
+	result := map[string]string{}
+	for thingId, deviceId := range existing {
+		result[thingId] = deviceId
+	}
+	for deviceId, thingId := range placed {
+		result[thingId] = deviceId
+	}
+	return result
+}
+
+// logMeters says what placing meters did, one line, only when it did something.
+func (this *Reconciler) logMeters(group model.Group, graphId string, meters graphs.Meters) {
+	if len(meters.Created) > 0 {
+		this.logger.Info("created meter things for new devices",
+			"group", group.Path, "graph", graphId, "meters", len(meters.Created))
+	}
+	if len(meters.Plain) > 0 {
+		this.logger.Warn("devices already linked to a thing this service did not make for the group, placed as device nodes",
+			"group", group.Path, "graph", graphId, "devices", meters.Plain)
+	}
+}
+
+// logConflict names a lost compare-and-set. It is returned like any other
+// failed write - the next trigger reads the graph again and applies the same
+// edit - but a 409 is the repository saying another writer got in between five
+// times, not a fault of this service, and the log should not read as one.
+func (this *Reconciler) logConflict(err error, path string, graphId string) {
+	if errors.Is(err, graphs.ErrConflict) {
+		this.logger.Warn("graph written by someone else while this pass was writing, the next pass applies the edit again",
+			"group", path, "graph", graphId, "error", err)
+	}
 }
 
 // rename follows a group rename, but only into a name this service wrote.

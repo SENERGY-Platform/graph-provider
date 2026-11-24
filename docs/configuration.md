@@ -21,6 +21,7 @@ setting it blank.
 | Key | Purpose |
 | --- | --- |
 | `device_repository_url`, `permissions_v2_url`, `timescale_wrapper_url` | cluster-internal, not the gateway |
+| `permissions_device_topic`, `permissions_graph_topic`, `permissions_thing_topic` | the topic ids permissions-v2 keys rights under (default `devices`, `graphs`, `things`); the thing topic is where the group share of a meter thing is written |
 | `kafka_url`, `kafka_consumer_group`, `device_topic`, `device_type_topic`, `graph_topic` | triggers; the consumer group is stable and must not differ per instance, and the three topics must name three different topics |
 | `keycloak_url`, `keycloak_realm`, `keycloak_client_id`, `keycloak_client_secret` | group tree |
 | `service_user_id` | graph owner; should be the `sub` of the token in use |

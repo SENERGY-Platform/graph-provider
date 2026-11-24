@@ -102,6 +102,7 @@ type Config struct {
 	// names but are a different namespace.
 	PermissionsDeviceTopic string `json:"permissions_device_topic" env_var:"PERMISSIONS_DEVICE_TOPIC"`
 	PermissionsGraphTopic  string `json:"permissions_graph_topic" env_var:"PERMISSIONS_GRAPH_TOPIC"`
+	PermissionsThingTopic  string `json:"permissions_thing_topic" env_var:"PERMISSIONS_THING_TOPIC"`
 
 	// ServiceUserId owns every graph this service creates.
 	//
@@ -159,6 +160,7 @@ func New(path string) (*Config, error) {
 		},
 		PermissionsDeviceTopic: "devices",
 		PermissionsGraphTopic:  "graphs",
+		PermissionsThingTopic:  "things",
 		GroupPollInterval:      sb_config_types.Duration(5 * time.Minute),
 		ReconcileInterval:      sb_config_types.Duration(time.Hour),
 		Enabled:                true,

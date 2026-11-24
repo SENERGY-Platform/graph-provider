@@ -18,6 +18,7 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,6 +34,7 @@ import (
 	"github.com/SENERGY-Platform/graph-provider/pkg/events"
 	"github.com/SENERGY-Platform/graph-provider/pkg/graphs"
 	"github.com/SENERGY-Platform/graph-provider/pkg/model"
+	"github.com/SENERGY-Platform/graph-provider/pkg/things"
 	platform "github.com/SENERGY-Platform/models/go/models"
 	permissions "github.com/SENERGY-Platform/permissions-v2/pkg/client"
 )
@@ -40,6 +42,7 @@ import (
 const (
 	deviceTopic = "devices"
 	graphTopic  = "graphs"
+	thingTopic  = "things"
 	serviceUser = "service-user"
 	token       = "token"
 )
@@ -77,6 +80,26 @@ type world struct {
 	graphOrder []string
 	nextGraph  int
 
+	// things is every thing of the repository by id, links included, in
+	// creation order. Like graphs, the fake stores what it is given and
+	// enforces the rules the real repository enforces, so a pass that would be
+	// answered with a 400 fails here too.
+	things     map[string]things.Thing
+	thingOrder []string
+	nextThing  int
+
+	// ended holds the ended versions of edges per graph. The projection the
+	// repository hands out does not show them, a correction that deletes a node
+	// an ended edge points at is refused, a change keeps them.
+	ended map[string][]platform.Edge
+
+	// failLink makes AddDeviceLink fail, to see a pass abort halfway.
+	failLink bool
+	// failSetGraphWith makes SetGraph answer with that status once.
+	failSetGraphWith int
+	// setGraphBodies is the JSON of every graph SetGraph was handed.
+	setGraphBodies [][]byte
+
 	// resources is keyed topic -> id. Device resources are derived from
 	// deviceGroups; graph resources are created by SetGraph.
 	resources map[string]map[string]permissions.Resource
@@ -95,7 +118,8 @@ func newWorld() *world {
 		devices:       map[string]platform.ExtendedDevice{},
 		deviceGroups:  map[string][]string{},
 		graphs:        map[string]platform.Graph{},
-		resources:     map[string]map[string]permissions.Resource{deviceTopic: {}, graphTopic: {}},
+		things:        map[string]things.Thing{},
+		resources:     map[string]map[string]permissions.Resource{deviceTopic: {}, graphTopic: {}, thingTopic: {}},
 		readingValues: map[model.ReadingKey]float64{},
 	}
 }
@@ -428,10 +452,217 @@ func (this *fakeRepository) SetGraph(_ string, graph platform.Graph) (platform.G
 	this.w.mu.Lock()
 	defer this.w.mu.Unlock()
 	this.w.record("SetGraph")
+	this.w.record("Correction")
+	if body, err := json.Marshal(graph); err == nil {
+		this.w.setGraphBodies = append(this.w.setGraphBodies, body)
+	}
+	if status := this.w.failSetGraphWith; status != 0 {
+		this.w.failSetGraphWith = 0
+		return graph, errors.New("injected failure"), status
+	}
 	if err := graph.Valid(); err != nil {
 		// The repository answers an invalid graph with a 400 rather than
 		// storing it, and a test that stored it would hide the bug.
 		return graph, fmt.Errorf("invalid graph: %w", err), http.StatusBadRequest
+	}
+	// The rules the repository adds for things: the thing exists, it is not the
+	// end node, and a node never turns into another resource.
+	for _, node := range graph.Nodes {
+		if node.ResourceType == model.ResourceTypeThing {
+			if _, known := this.w.things[node.ResourceId]; !known {
+				return graph, fmt.Errorf("thing %v of node %v does not exist", node.ResourceId, node.Id), http.StatusBadRequest
+			}
+		}
+	}
+	if previous, exists := this.w.graphs[graph.Id]; exists {
+		if err := graphs.NodeIdentityKept(previous, graph); err != nil {
+			return graph, err, http.StatusBadRequest
+		}
+		kept := map[string]bool{}
+		for _, node := range graph.Nodes {
+			kept[node.Id] = true
+		}
+		for _, node := range previous.Nodes {
+			if kept[node.Id] {
+				continue
+			}
+			for _, edge := range this.w.ended[graph.Id] {
+				if edge.FromNodeId == node.Id || edge.ToNodeId == node.Id {
+					return graph, fmt.Errorf("invalid at the past: ended edge %v points at the removed node %v", edge.Id, node.Id), http.StatusBadRequest
+				}
+			}
+		}
+	}
+	return this.w.storeGraph(graph), nil, http.StatusOK
+}
+
+// fakeThings is the repository's thing endpoints.
+type fakeThings struct {
+	w *world
+}
+
+func (this *fakeThings) List(_ context.Context, _ string, ids []string, deviceIds []string) ([]things.Thing, error, int) {
+	this.w.mu.Lock()
+	defer this.w.mu.Unlock()
+	this.w.record("ListThings")
+	result := []things.Thing{}
+	for _, id := range this.w.thingOrder {
+		thing := this.w.things[id]
+		if ids != nil && !contains(ids, id) {
+			continue
+		}
+		if deviceIds != nil {
+			linked := false
+			for _, link := range thing.DeviceLinks {
+				// open or ended, like the real filter
+				linked = linked || contains(deviceIds, link.DeviceId)
+			}
+			if !linked {
+				continue
+			}
+		}
+		result = append(result, thing)
+	}
+	return result, nil, http.StatusOK
+}
+
+func (this *fakeThings) Create(_ context.Context, _ string, thing things.Thing) (things.Thing, error, int) {
+	this.w.mu.Lock()
+	defer this.w.mu.Unlock()
+	this.w.record("CreateThing")
+	if thing.Id != "" || thing.Name == "" || thing.OwnerId == "" {
+		return thing, errors.New("invalid thing"), http.StatusBadRequest
+	}
+	this.w.nextThing++
+	thing.Id = fmt.Sprintf("t%v", this.w.nextThing)
+	thing.DeviceLinks = []things.Link{}
+	this.w.things[thing.Id] = thing
+	this.w.thingOrder = append(this.w.thingOrder, thing.Id)
+	this.w.resources[thingTopic][thing.Id] = permissions.Resource{
+		Id:      thing.Id,
+		TopicId: thingTopic,
+		ResourcePermissions: permissions.ResourcePermissions{
+			UserPermissions: map[string]permissions.PermissionsMap{
+				thing.OwnerId: {Read: true, Write: true, Execute: true, Administrate: true},
+			},
+			GroupPermissions: map[string]permissions.PermissionsMap{},
+			RolePermissions:  map[string]permissions.PermissionsMap{},
+		},
+	}
+	return thing, nil, http.StatusOK
+}
+
+func (this *fakeThings) AddDeviceLink(_ context.Context, _ string, thingId string, link things.LinkCreate) (things.Thing, error, int) {
+	this.w.mu.Lock()
+	defer this.w.mu.Unlock()
+	this.w.record("AddDeviceLink")
+	if this.w.failLink {
+		return things.Thing{}, errors.New("injected failure"), http.StatusInternalServerError
+	}
+	thing, known := this.w.things[thingId]
+	if !known {
+		return thing, errors.New("not found"), http.StatusNotFound
+	}
+	from := fixedNow
+	if link.From != nil {
+		from = *link.From
+	}
+	// Periods of one device never overlap, across all things.
+	for _, other := range this.w.things {
+		for _, existing := range other.DeviceLinks {
+			if existing.DeviceId == link.DeviceId && (existing.Until == nil || existing.Until.After(from)) {
+				return thing, errors.New("device links overlap"), http.StatusBadRequest
+			}
+		}
+	}
+	thing.DeviceLinks = append(thing.DeviceLinks, things.Link{
+		Id: fmt.Sprintf("l%v", len(this.w.calls)), DeviceId: link.DeviceId, From: from, Until: link.Until,
+	})
+	this.w.things[thingId] = thing
+	return thing, nil, http.StatusOK
+}
+
+func (this *fakeThings) EndDeviceLink(_ context.Context, _ string, thingId string, linkId string, until time.Time) (things.Thing, error, int) {
+	this.w.mu.Lock()
+	defer this.w.mu.Unlock()
+	this.w.record("EndDeviceLink")
+	thing := this.w.things[thingId]
+	for i, link := range thing.DeviceLinks {
+		if link.Id == linkId {
+			end := until
+			thing.DeviceLinks[i].Until = &end
+		}
+	}
+	this.w.things[thingId] = thing
+	return thing, nil, http.StatusOK
+}
+
+func (this *fakeThings) Delete(_ context.Context, _ string, thingId string) (error, int) {
+	this.w.mu.Lock()
+	defer this.w.mu.Unlock()
+	this.w.record("DeleteThing")
+	delete(this.w.things, thingId)
+	delete(this.w.resources[thingTopic], thingId)
+	for i, id := range this.w.thingOrder {
+		if id == thingId {
+			this.w.thingOrder = append(this.w.thingOrder[:i], this.w.thingOrder[i+1:]...)
+			break
+		}
+	}
+	return nil, http.StatusOK
+}
+
+func contains(list []string, value string) bool {
+	for _, entry := range list {
+		if entry == value {
+			return true
+		}
+	}
+	return false
+}
+
+// ChangeGraph is PUT with at and mode=change: what the body no longer holds
+// ends now. Here that means the edges of a removed node move to the ended
+// versions, and the node is gone from the projection.
+func (this *fakeThings) ChangeGraph(_ context.Context, _ string, graph platform.Graph, _ time.Time) (platform.Graph, error, int) {
+	this.w.mu.Lock()
+	defer this.w.mu.Unlock()
+	this.w.record("SetGraph") // a write like any other
+	this.w.record("ChangeGraph")
+	if body, err := json.Marshal(graph); err == nil {
+		this.w.setGraphBodies = append(this.w.setGraphBodies, body)
+	}
+	if err := graph.Valid(); err != nil {
+		return graph, fmt.Errorf("invalid graph: %w", err), http.StatusBadRequest
+	}
+	previous, exists := this.w.graphs[graph.Id]
+	if !exists {
+		return graph, errors.New("not found"), http.StatusNotFound
+	}
+	if err := graphs.NodeIdentityKept(previous, graph); err != nil {
+		return graph, err, http.StatusBadRequest
+	}
+	kept := map[string]bool{}
+	for _, node := range graph.Nodes {
+		kept[node.Id] = true
+	}
+	removed := map[string]bool{}
+	for _, node := range previous.Nodes {
+		if !kept[node.Id] {
+			removed[node.Id] = true
+		}
+	}
+	keptEdges := map[string]bool{}
+	for _, edge := range graph.Edges {
+		keptEdges[edge.Id] = true
+	}
+	if this.w.ended == nil {
+		this.w.ended = map[string][]platform.Edge{}
+	}
+	for _, edge := range previous.Edges {
+		if !keptEdges[edge.Id] {
+			this.w.ended[graph.Id] = append(this.w.ended[graph.Id], edge)
+		}
 	}
 	return this.w.storeGraph(graph), nil, http.StatusOK
 }
@@ -613,7 +844,7 @@ func newHarness(t *testing.T, tune ...func(*harnessOptions)) *harness {
 	perms := &fakePermissions{w: w}
 
 	c := cache.New(repository, perms, &fakeGroupSource{w: w}, token, deviceTopic, options.allowGroup)
-	store := graphs.New(repository, perms, token, graphTopic, serviceUser, options.writable)
+	store := graphs.New(repository, perms, &fakeThings{w: w}, token, graphTopic, thingTopic, serviceUser, options.writable)
 	pending := events.NewPending()
 
 	// io.Discard rather than t.Log: the loop test keeps a goroutine running
@@ -636,13 +867,57 @@ func (this *harness) mustFull(t *testing.T) {
 }
 
 // graphOfGroup fails the test when a group has no default graph.
+//
+// The graph is returned as its devices see it: a meter thing's node is shown
+// as the node of the device linked to it, so the tests that are about where a
+// device went do not change with how the device is represented. The tests that
+// are about the representation read the raw graph from the world.
 func (this *harness) graphOfGroup(t *testing.T, path string) platform.Graph {
 	t.Helper()
 	graph, ok := this.world.graphOfGroup(path)
 	if !ok {
 		t.Fatalf("no default graph for group %v", path)
 	}
-	return graph
+	return this.world.deviceView(graph)
+}
+
+// deviceView rewrites each thing node to a device node of the device linked to
+// the thing, node id and edges included.
+func (this *world) deviceView(graph platform.Graph) platform.Graph {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	deviceOf := map[string]string{}
+	for _, thing := range this.things {
+		for _, link := range thing.DeviceLinks {
+			if link.Until == nil {
+				deviceOf[thing.Id] = link.DeviceId
+			}
+		}
+	}
+	result := cloneGraph(graph)
+	renamed := map[string]string{}
+	for i, node := range result.Nodes {
+		if node.ResourceType != model.ResourceTypeThing {
+			continue
+		}
+		deviceId, linked := deviceOf[node.ResourceId]
+		if !linked {
+			continue
+		}
+		renamed[node.Id] = deviceId
+		result.Nodes[i].Id = deviceId
+		result.Nodes[i].ResourceId = deviceId
+		result.Nodes[i].ResourceType = platform.GraphResourceTypeDevice
+	}
+	for i, edge := range result.Edges {
+		if to, ok := renamed[edge.ToNodeId]; ok {
+			result.Edges[i].ToNodeId = to
+		}
+		if from, ok := renamed[edge.FromNodeId]; ok {
+			result.Edges[i].FromNodeId = from
+		}
+	}
+	return result
 }
 
 // --- graph inspection helpers -------------------------------------------------

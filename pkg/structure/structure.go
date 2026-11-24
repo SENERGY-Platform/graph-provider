@@ -66,6 +66,65 @@ type Options struct {
 	// hang under. Empty means no collector is created and those devices go to
 	// the root, which is also what happens for a site that has none of them.
 	NoFlowNodeName string
+
+	// Meters maps a device id to the id of the meter thing the device is placed
+	// as. A device with an entry gets a node of resource type thing, whose id
+	// and resource id are the thing's id, instead of a device node; the
+	// placement is still decided by the device's readings. A device without an
+	// entry is placed as a device node, as before.
+	//
+	// The things exist before the graph is built: the repository refuses a
+	// graph whose thing node names a thing it does not know.
+	Meters map[string]string
+
+	// ThingDevices maps the id of a thing already in the graph to the device
+	// that measures it, so Attach can read such a node's reading and offer it
+	// as a parent. Without it a graph made of meter things would offer no
+	// parent at all and every new device would go to the root.
+	ThingDevices map[string]string
+}
+
+// nodeIdOf is the id of the node a device is placed as.
+func (this Options) nodeIdOf(deviceId string) string {
+	if thingId, ok := this.Meters[deviceId]; ok {
+		return thingId
+	}
+	return deviceId
+}
+
+// nodeOf builds the node a device is placed as. A meter thing has no
+// attributes of its own here: the carrier and the grid connection are not
+// known from a reading, and a wrong one is worse than none.
+func (this Options) nodeOf(deviceId string) models.Node {
+	if thingId, ok := this.Meters[deviceId]; ok {
+		return models.Node{
+			Id:           thingId,
+			ResourceId:   thingId,
+			ResourceType: model.ResourceTypeThing,
+			Attributes:   []models.Attribute{},
+		}
+	}
+	return models.Node{
+		// id == resource_id on device nodes is a frontend convention,
+		// not a formality: the graph view looks a node's device up by
+		// its node id.
+		Id:           deviceId,
+		ResourceId:   deviceId,
+		ResourceType: models.GraphResourceTypeDevice,
+		Attributes:   []models.Attribute{},
+	}
+}
+
+// deviceOfNode is the device a node stands for in the readings: the device of
+// a device node, the measuring device of a thing node, "" for anything else.
+func (this Options) deviceOfNode(node models.Node) string {
+	switch {
+	case node.ResourceType == models.GraphResourceTypeDevice && node.ResourceId != "":
+		return node.ResourceId
+	case node.ResourceType == model.ResourceTypeThing:
+		return this.ThingDevices[node.ResourceId]
+	}
+	return ""
 }
 
 // tolerance clamps the configured value into the range the test is defined
@@ -132,15 +191,7 @@ func Build(owner string, group model.Group, devices []model.Device, readings map
 	placements := []model.Placement{}
 	noFlow := false
 	for _, device := range sorted {
-		graph.Nodes = append(graph.Nodes, models.Node{
-			// id == resource_id on device nodes is a frontend convention,
-			// not a formality: the graph view looks a node's device up by
-			// its node id.
-			Id:           device.Id,
-			ResourceId:   device.Id,
-			ResourceType: models.GraphResourceTypeDevice,
-			Attributes:   []models.Attribute{},
-		})
+		graph.Nodes = append(graph.Nodes, opts.nodeOf(device.Id))
 
 		carrier, value, ok := primaryCarrier(device.Id, device.CarriersOf(), readings)
 		if !ok {
@@ -206,9 +257,9 @@ func Build(owner string, group model.Group, devices []model.Device, readings map
 	}
 	for _, device := range sorted {
 		graph.Edges = append(graph.Edges, models.Edge{
-			Id:         uniqueEdgeId(takenEdgeIds, device.Id, parentOf[device.Id], opts),
-			FromNodeId: device.Id,
-			ToNodeId:   parentOf[device.Id],
+			Id:         uniqueEdgeId(takenEdgeIds, opts.nodeIdOf(device.Id), opts.nodeIdOf(parentOf[device.Id]), opts),
+			FromNodeId: opts.nodeIdOf(device.Id),
+			ToNodeId:   opts.nodeIdOf(parentOf[device.Id]),
 			// In a tree every node has exactly one parent, so there is no
 			// share to estimate and every edge carries the whole node.
 			Weight:     model.FullWeight,
@@ -282,7 +333,7 @@ func Attach(graph *models.Graph, device model.Device, readings map[model.Reading
 		placement.Value = value
 		placement.ParentId = rootId
 		placement.Reason = model.PlacedAtRootNothingFits
-		candidate, candidates, found := bestExistingParent(&working, carrier, value, readings, opts.tolerance())
+		candidate, candidates, found := bestExistingParent(&working, opts, carrier, value, readings, opts.tolerance())
 		placement.Candidates = candidates
 		if found {
 			parentId = candidate
@@ -291,19 +342,15 @@ func Attach(graph *models.Graph, device model.Device, readings map[model.Reading
 		}
 	}
 
-	working.Nodes = append(working.Nodes, models.Node{
-		Id:           device.Id,
-		ResourceId:   device.Id,
-		ResourceType: models.GraphResourceTypeDevice,
-		Attributes:   []models.Attribute{},
-	})
+	nodeId := opts.nodeIdOf(device.Id)
+	working.Nodes = append(working.Nodes, opts.nodeOf(device.Id))
 	taken := map[string]bool{}
 	for _, edge := range working.Edges {
 		taken[edge.Id] = true
 	}
 	working.Edges = append(working.Edges, models.Edge{
-		Id:         uniqueEdgeId(taken, device.Id, parentId, opts),
-		FromNodeId: device.Id,
+		Id:         uniqueEdgeId(taken, nodeId, parentId, opts),
+		FromNodeId: nodeId,
 		ToNodeId:   parentId,
 		Weight:     model.FullWeight,
 		Attributes: []models.Attribute{
@@ -527,14 +574,16 @@ func shallower(a placement, remainingA float64, depthA int, b placement, remaini
 	return a.deviceId < b.deviceId
 }
 
-func bestExistingParent(graph *models.Graph, carrier model.Carrier, value float64, readings map[model.ReadingKey]model.Reading, tolerance float64) (string, []model.Candidate, bool) {
+func bestExistingParent(graph *models.Graph, opts Options, carrier model.Carrier, value float64, readings map[model.ReadingKey]model.Reading, tolerance float64) (string, []model.Candidate, bool) {
 	childrenOf := map[string][]string{}
 	for _, edge := range graph.Edges {
 		childrenOf[edge.ToNodeId] = append(childrenOf[edge.ToNodeId], edge.FromNodeId)
 	}
-	resourceIdOf := map[string]string{}
+	// The device a node's readings are those of. For a device node that is its
+	// resource, for a meter thing the device linked to it.
+	deviceOf := map[string]string{}
 	for _, node := range graph.Nodes {
-		resourceIdOf[node.Id] = node.ResourceId
+		deviceOf[node.Id] = opts.deviceOfNode(node)
 	}
 
 	// Depth per node, so the same shallowest-first rule as Build can be
@@ -563,20 +612,21 @@ func bestExistingParent(graph *models.Graph, carrier model.Carrier, value float6
 	found := false
 	candidates := []model.Candidate{}
 	for _, node := range graph.Nodes {
-		if node.ResourceType != models.GraphResourceTypeDevice || node.ResourceId == "" {
+		nodeDevice := deviceOf[node.Id]
+		if nodeDevice == "" {
 			continue
 		}
 		// The carriers a node measures are not stored on the graph, so they
 		// are read back out of the readings. A node whose largest reading is
 		// for another carrier belongs to that carrier's tree and is no
 		// candidate here.
-		nodeCarrier, nodeValue, ok := primaryCarrier(node.ResourceId, model.Carriers, readings)
+		nodeCarrier, nodeValue, ok := primaryCarrier(nodeDevice, model.Carriers, readings)
 		if !ok || nodeCarrier != carrier {
 			continue
 		}
 		remaining := nodeValue
 		for _, childNodeId := range childrenOf[node.Id] {
-			if reading, ok := readings[model.ReadingKey{DeviceId: resourceIdOf[childNodeId], Carrier: carrier}]; ok {
+			if reading, ok := readings[model.ReadingKey{DeviceId: deviceOf[childNodeId], Carrier: carrier}]; ok {
 				remaining -= reading.Value
 			}
 		}
@@ -585,7 +635,7 @@ func bestExistingParent(graph *models.Graph, carrier model.Carrier, value float6
 		explained := remaining < nodeValue*tolerance
 		fits := !explained && remaining >= value*(1-tolerance)
 		candidates = append(candidates, model.Candidate{
-			DeviceId:  node.ResourceId,
+			DeviceId:  nodeDevice,
 			Remaining: remaining,
 			Fits:      fits,
 		})
@@ -607,7 +657,7 @@ func bestExistingParent(graph *models.Graph, carrier model.Carrier, value float6
 		}
 	}
 	for i := range candidates {
-		candidates[i].Chosen = found && candidates[i].DeviceId == bestId
+		candidates[i].Chosen = found && deviceOf[bestId] == candidates[i].DeviceId
 	}
 	return bestId, candidates, found
 }

@@ -26,7 +26,10 @@ one:
   root is always a custom node;
 - edge weights 1..100; outgoing weights per node sum to 0 or 100;
 - no cycles, no duplicate resource id within a graph;
-- an owner is required.
+- an owner is required;
+- a node of resource type `thing` names a thing that exists, and is never the end node.
+  A device linked to a thing may not be in the same graph as that thing while the link
+  holds.
 
 In a tree every node has exactly one parent, so every weight is 100 and the heuristic
 never has to estimate a share.
@@ -39,6 +42,9 @@ generated graph must follow them or it renders wrongly, with no error anywhere:
 - **Edges point child to parent.** The root is the source, devices are the sinks.
 - **A graph's display name is the `name` attribute of its root node**, not a
   graph-level attribute.
+- **A meter is a thing node** (`resource_type: thing`) in the thing's id as node id and
+  resource id, with no attributes written by this service. The name lives on the thing, which
+  is named after the device it was made for.
 - **Device nodes use `id == resource_id`.** A grouping node gets a fresh UUID; the root
   is called `root`.
 - **`system_changed`**, on the graph or on an edge, asks the user to re-check the
@@ -69,6 +75,10 @@ own work:
   no access to its own graph.
 - **The name answers the one question that needs history**: does the root still carry
   the name the service wrote, or did a user rename the unit?
+
+A meter thing carries one of them, `graph-provider/keycloak-group-id`, with the group's
+id and the same origin. It is how a pass recognises a meter it made: a meter thing owned by
+the service user and carrying the group's id.
 
 ### Finding them costs one listing per key
 

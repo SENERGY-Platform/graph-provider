@@ -42,6 +42,46 @@ be wrong, none of them fatal because a user can correct the result:
   device, and a whole site of idle meters came out as an invented hierarchy under
   whichever device sorted first.
 
+## A departed device's link ends late, and a restart delays it
+
+`einzelfall`, DAS-270. When a device is no longer in the group, the link of its
+meter - only on a meter this service made for the group - is ended at now, after the
+device was missing in two consecutive passes over that graph. The meter thing, its node
+and everything measured stay. Two passes because a missing device looks the same as a
+permissions read that glitched, and a link ended by mistake is replaced by a new meter,
+which cuts the history.
+
+- The count is in memory. After a restart a departed device needs two passes again, so
+  its link ends later; nothing is lost.
+- A group rename resets the counts: every device looks gone in that pass.
+- Latency is two passes: up to two reconcile intervals when only the safety net runs,
+  less when Kafka triggers pass.
+- The new group's graph does not adopt the old meter (other group id), and the device is
+  placed there as a device node while the old link is open, with a warning. Once the old
+  link has ended, a later pass gives it a meter of its own.
+- Links on things this service did not make (other owner, other kind, no group mark) are
+  never touched.
+
+## Meters are shared once, and again on a rename
+
+A meter is shared with its group when it is made or adopted, and follows a group rename.
+A pass does not check it otherwise: that would be one permissions request per meter per
+pass, and every graph write echoes into a pass. A share taken away by hand stays away.
+
+## Existing device nodes are not converted
+
+Graphs written before the meters keep their device nodes. A graph can hold both kinds,
+and everything here reads both. Converting is a one-time migration, not this service's
+job.
+
+## A meter that returns to a graph needs a new node id
+
+A thing node is given the thing's id as its node id. Node ids are unique over the whole
+stored document, ended nodes included, and a node that left comes back as a new node with
+a new id. If a person ended the node of one of this service's meters and the meter is
+adopted again, the write is answered with a 400. The projection does not show ended
+nodes, so the collision cannot be seen beforehand.
+
 ## A gas meter counting cubic metres is collected as measuring no medium
 
 `einzelfall`, found in the catalog snapshot of 2026-10-05: the two MOSES gas meter types

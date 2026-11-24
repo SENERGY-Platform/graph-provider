@@ -64,7 +64,7 @@ summary
   groups affected: 2
   graphs to create: 1
   graphs to update: 0
-  device nodes in those graphs: 4
+  device and meter nodes in those graphs: 4
   devices at the root for want of a reading: 1
 ```
 

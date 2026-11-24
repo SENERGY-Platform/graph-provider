@@ -122,6 +122,48 @@ The path is kept beside it because sharing needs it.
 The realm has no admin event listener, so there is no event stream for group CRUD. The
 poll interval is therefore also the worst-case latency for noticing a new company.
 
+## A new device lands as a measuring point, not as a device node
+
+`einzelfall`, DAS-270 (2026-11-24). A device node ties the graph to one piece of
+hardware: when the meter is replaced the node has to be replaced, and the history of
+what the position measured is cut at the swap. The device repository has a thing of
+`kind: "meter"` for exactly that, a measuring point that devices are linked to for a
+period. So a device this service adds is a meter thing named after the device, a link
+from the device to it that is open from the moment it is made, and a node of resource
+type `thing` in the thing's id where the device node would have been.
+
+- **The placement is unchanged.** It still reads the device's readings; a thing node is
+  read through the device linked to it, so a graph made of meters offers parents like one
+  made of device nodes.
+- **Nothing is invented about the meter.** No readings at the link, no factor, no carrier
+  or grid attribute: none of them is known when a device is first seen, and a wrong one is
+  worse than none. A person fills them in where the replacement is entered.
+- **Owner and sharing follow the graph.** The service user owns the thing and is its only
+  administrator; the group gets read, write and execute on it, as on the graph. A member
+  who can read the company graph but not the things it points at would see nodes that do
+  not resolve. Write is there so the guided actions (replace a device) work for the group.
+- **The thing carries the group's id** (`graph-provider/keycloak-group-id`), the same
+  provenance the graph has, and it is how a pass recognises a meter it made itself.
+- **Existing device nodes stay.** Turning them into meters is a migration of its own,
+  done once and by hand; this service never converts a node, and refuses to write a graph
+  in which a node id would change what it stands for (the repository answers that with a
+  400).
+- **`PUT` without `at` for additions, `mode=change` at now for removals.** An addition stays
+  a correction at now, which is what every writer did before and what keeps the history the writer cannot see: versions that ended, and
+  versions that have not started. This service reads the projection at now, edits it,
+  and sends it back. It sends no `valid_from` or `valid_until` - the pinned models module
+  has no such fields, and the repository answers them on an added element with a 400.
+
+**Rejected: falling back to a device node when the thing cannot be made.** A device
+node and a meter for the same device would be two representations of one position, which
+is what the migration is meant to end. A failure ends the group's pass instead, and the
+next one finds what was made.
+
+**Rejected: bumping device-repository and models.** The repository's thing endpoints
+live in its v3 module; moving this service over would touch every import for five
+requests. `pkg/things` is a client of its own with the fields this service uses, and the
+models module is untouched. Revisit when the service moves to v3 for other reasons.
+
 ## Deliberately out of scope
 
 - **Graphs created by users.** The service neither reads nor modifies them. That is a
@@ -130,5 +172,8 @@ poll interval is therefore also the worst-case latency for noticing a new compan
 - **Deleting graphs of deleted groups.** The group attribute and the share are removed;
   the graph stays. Deleting a user's work in response to a directory event is the
   harsher of the two actions, and the graph remains usable to its owner.
+- **Ending nodes, or links on things this service did not make.** A device that leaves
+  the group has the link of its own meter ended after two missing passes, see
+  [reconciliation.md](reconciliation.md); thing and node stay.
 - **Edge weights below 100.** A tree does not need them. As soon as a device may have
   two parents, that becomes its own subject.

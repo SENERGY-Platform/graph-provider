@@ -43,6 +43,7 @@ import (
 	"github.com/SENERGY-Platform/graph-provider/pkg/model"
 	"github.com/SENERGY-Platform/graph-provider/pkg/plan"
 	"github.com/SENERGY-Platform/graph-provider/pkg/reconcile"
+	"github.com/SENERGY-Platform/graph-provider/pkg/things"
 	permissions "github.com/SENERGY-Platform/permissions-v2/pkg/client"
 	"github.com/SENERGY-Platform/service-commons/pkg/jwt"
 	timescale "github.com/SENERGY-Platform/timescale-wrapper/pkg/client"
@@ -134,8 +135,9 @@ func run() int {
 	deviceCache := cache.New(repository, permissionsClient, keycloakClient, token,
 		cfg.PermissionsDeviceTopic, cfg.GroupAllowed)
 
-	store := graphs.New(repository, permissionsClient, token,
-		cfg.PermissionsGraphTopic, cfg.ServiceUserId, writable)
+	thingClient := things.New(cfg.DeviceRepositoryUrl, time.Duration(cfg.HttpTimeout))
+	store := graphs.New(repository, permissionsClient, thingClient, token,
+		cfg.PermissionsGraphTopic, cfg.PermissionsThingTopic, cfg.ServiceUserId, writable)
 
 	readings := consumption.New(timescale.NewClient(cfg.TimescaleWrapperUrl), token)
 

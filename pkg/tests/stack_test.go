@@ -48,6 +48,7 @@ import (
 	"github.com/SENERGY-Platform/graph-provider/pkg/graphs"
 	"github.com/SENERGY-Platform/graph-provider/pkg/model"
 	"github.com/SENERGY-Platform/graph-provider/pkg/reconcile"
+	"github.com/SENERGY-Platform/graph-provider/pkg/things"
 	platform "github.com/SENERGY-Platform/models/go/models"
 	permissionsv2 "github.com/SENERGY-Platform/permissions-v2/pkg"
 	permissions "github.com/SENERGY-Platform/permissions-v2/pkg/client"
@@ -233,7 +234,7 @@ func start(t *testing.T) *stack {
 	countedPermissions := countingPermissions{Client: this.permissions, writes: &this.permissionWrites}
 
 	this.cache = cache.New(countedRepository, countedPermissions, this.groups, token, deviceTopic, nil)
-	this.store = graphs.New(countedRepository, countedPermissions, token, graphTopic, this.serviceUserId, true)
+	this.store = graphs.New(countedRepository, countedPermissions, things.New(this.repositoryUrl, 30*time.Second), token, graphTopic, "things", this.serviceUserId, true)
 	this.rec = reconcile.New(this.cache, this.store, this.readings, events.NewPending(), reconcile.Config{
 		ServiceUserId: this.serviceUserId,
 		Window:        referenceWindow,

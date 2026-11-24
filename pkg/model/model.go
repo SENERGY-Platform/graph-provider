@@ -226,6 +226,12 @@ type PlannedChange struct {
 	// shown names instead of ids.
 	Devices []Device
 
+	// Meters maps the id of a thing node's thing to the device it measures,
+	// for the nodes this pass places or reads as meters. The report resolves a
+	// thing node's name and reading through it. A thing that is only planned
+	// carries a placeholder id.
+	Meters map[string]string
+
 	// NoReading are the ids of devices the pass had no consumption figure for.
 	// They are the ones hanging off the root for a reason a reader can act on,
 	// and it cannot be derived from the graph: the largest meter of a carrier
@@ -381,6 +387,12 @@ const (
 	// ResourceTypeCustom is the resource type of a node that is not a device.
 	// The root is the only such node this service creates.
 	ResourceTypeCustom = "dashboard-custom"
+
+	// ResourceTypeThing is the resource type of a node that stands for a thing.
+	// A new device is placed as a meter thing, so its node has this type and
+	// the thing's id as resource id. The pinned models module predates the
+	// constant; the type is a plain string there.
+	ResourceTypeThing = "thing"
 
 	// FullWeight is the weight of an edge whose node hangs off a single
 	// parent. In a tree that is every edge.

@@ -501,3 +501,34 @@ func renderReport(t *testing.T, change model.PlannedChange) (string, error) {
 	err := Render(out, []model.PlannedChange{change})
 	return out.String(), err
 }
+
+// A meter thing is drawn under the name of the device it measures, with its
+// reading, and counted among the nodes.
+func TestRenderNamesAMeterAfterItsDeviceAndShowsItsReading(t *testing.T) {
+	key, reading := readingOf("d1", model.Electricity, 1200)
+	change := model.PlannedChange{
+		Action: model.ActionCreate,
+		Group:  model.Group{Path: "/acme", Name: "acme"},
+		Graph: tree("", "acme", map[string]string{
+			"t1": model.RootNodeId,
+		}),
+		Devices:  []model.Device{meter("d1", "Hauptzaehler", model.Electricity)},
+		Readings: map[model.ReadingKey]model.Reading{key: reading},
+		Meters:   map[string]string{"t1": "d1"},
+	}
+	for i, node := range change.Graph.Nodes {
+		if node.Id == "t1" {
+			change.Graph.Nodes[i].ResourceType = model.ResourceTypeThing
+			change.Graph.Nodes[i].ResourceId = "t1"
+		}
+	}
+
+	report, entries := draw(t, []model.PlannedChange{change})
+	line := find(t, entries, "Hauptzaehler")
+	if !strings.Contains(line.text, "meter (t1)") || !strings.Contains(line.text, "1200.0") {
+		t.Errorf("expected the meter named after its device with its reading, got %q", line.text)
+	}
+	if !strings.Contains(report, "device and meter nodes in those graphs: 1") {
+		t.Errorf("expected the meter to be counted, got:\n%v", report)
+	}
+}

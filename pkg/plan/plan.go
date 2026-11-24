@@ -155,7 +155,7 @@ func renderTree(report *strings.Builder, change model.PlannedChange) {
 	values := nodeReadings(change)
 	deviceNodes := map[string]bool{}
 	for _, node := range graph.Nodes {
-		if node.ResourceType == platform.GraphResourceTypeDevice {
+		if deviceOfNode(change, node) != "" {
 			deviceNodes[node.Id] = true
 		}
 	}
@@ -259,6 +259,20 @@ func deviceReading(deviceId string, device model.Device, readings map[model.Read
 	return result, true
 }
 
+// deviceOfNode is the device a node stands for: the device of a device node,
+// the device measuring a meter thing, "" for any other node. A thing node the
+// pass knows no device for, one in a graph a user built by hand, stands for
+// none.
+func deviceOfNode(change model.PlannedChange, node platform.Node) string {
+	switch {
+	case node.ResourceType == platform.GraphResourceTypeDevice && node.ResourceId != "":
+		return node.ResourceId
+	case node.ResourceType == model.ResourceTypeThing:
+		return change.Meters[node.ResourceId]
+	}
+	return ""
+}
+
 // nodeReadings is deviceReading indexed by node id, so the tree walk can look
 // a node up directly instead of resolving its device on every line.
 func nodeReadings(change model.PlannedChange) map[string]reading {
@@ -268,14 +282,15 @@ func nodeReadings(change model.PlannedChange) map[string]reading {
 	}
 	result := map[string]reading{}
 	for _, node := range change.Graph.Nodes {
-		if node.ResourceType != platform.GraphResourceTypeDevice || node.ResourceId == "" {
+		deviceId := deviceOfNode(change, node)
+		if deviceId == "" {
 			continue
 		}
-		device, known := devices[node.ResourceId]
+		device, known := devices[deviceId]
 		if !known {
 			continue
 		}
-		if value, ok := deviceReading(node.ResourceId, device, change.Readings); ok {
+		if value, ok := deviceReading(deviceId, device, change.Readings); ok {
 			result[node.Id] = value
 		}
 	}
@@ -392,6 +407,15 @@ func labels(change model.PlannedChange) map[string]string {
 				continue
 			}
 			result[node.Id] = node.ResourceId
+		case node.ResourceType == model.ResourceTypeThing && change.Meters[node.ResourceId] != "":
+			// A meter thing is named after the device it measures, with the
+			// thing's id in brackets so it can be looked up.
+			deviceId := change.Meters[node.ResourceId]
+			name := deviceNames[deviceId]
+			if name == "" {
+				name = deviceId
+			}
+			result[node.Id] = fmt.Sprintf("%v, meter (%v)", name, node.ResourceId)
 		default:
 			if name := graphs.AttributeOf(node.Attributes, model.NodeAttrName); name != "" {
 				result[node.Id] = name
@@ -418,7 +442,7 @@ func renderSummary(report *strings.Builder, changes []model.PlannedChange) {
 			continue
 		}
 		for _, node := range change.Graph.Nodes {
-			if node.ResourceType == platform.GraphResourceTypeDevice {
+			if node.ResourceType == platform.GraphResourceTypeDevice || node.ResourceType == model.ResourceTypeThing {
 				devices++
 			}
 		}
@@ -434,7 +458,7 @@ func renderSummary(report *strings.Builder, changes []model.PlannedChange) {
 	fmt.Fprintf(report, "%vgroups affected: %v\n", indent, len(groups))
 	fmt.Fprintf(report, "%vgraphs to create: %v\n", indent, created)
 	fmt.Fprintf(report, "%vgraphs to update: %v\n", indent, updated)
-	fmt.Fprintf(report, "%vdevice nodes in those graphs: %v\n", indent, devices)
+	fmt.Fprintf(report, "%vdevice and meter nodes in those graphs: %v\n", indent, devices)
 	fmt.Fprintf(report, "%vplacements decided among competing candidates: %v\n", indent, contested)
 	fmt.Fprintf(report, "%vdevices placed by no reading of their own: %v\n", indent, unplaced)
 }

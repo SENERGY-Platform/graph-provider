@@ -42,6 +42,21 @@ func acmeHarness(t *testing.T, tune ...func(*harnessOptions)) *harness {
 	return h
 }
 
+// seedNested stores a graph as an earlier version of this service left it,
+// with device nodes and not meters: d1 on the root, d2 below d1. Existing
+// device nodes are not migrated, so every case about what a pass does to a
+// graph that already has them starts here.
+func seedNested(h *harness, path string, name string, ids ...string) platform.Graph {
+	graph := seededGraph(path, name, name, ids...)
+	for i, edge := range graph.Edges {
+		if edge.FromNodeId == "d2" {
+			graph.Edges[i].ToNodeId = "d1"
+			graph.Edges[i].Id = "edge-d2-d1"
+		}
+	}
+	return h.world.putGraph(graph, path)
+}
+
 // --- creation -----------------------------------------------------------------
 
 // A group with no graph gets one, and it follows every convention the graph
@@ -142,7 +157,9 @@ func TestCreateSharesAfterTheWrite(t *testing.T) {
 	if write < 0 || share < 0 {
 		t.Fatalf("expected a write and a share, got %v", calls)
 	}
-	if write > share {
+	// The meter things are shared when they are made, which has to be before
+	// the graph that points at them: the graph's own share is the last one.
+	if last := slices.Index(calls[write:], "SetPermission"); last < 0 {
 		t.Errorf("the graph must be written before it is shared, got %v", calls)
 	}
 }
@@ -198,10 +215,9 @@ func TestDriftedSharingIsRestoredWithoutRewritingTheGraph(t *testing.T) {
 // a better tree."
 func TestArrivalLeavesAManualMoveAlone(t *testing.T) {
 	h := acmeHarness(t)
-	h.mustFull(t)
+	graph := seedNested(h, "/acme", "acme", "d1", "d2")
 
 	// A user moves the sub-meter out from under the supply meter, by hand.
-	graph := h.graphOfGroup(t, "/acme")
 	for i, edge := range graph.Edges {
 		if edge.FromNodeId == "d2" {
 			graph.Edges[i] = platform.Edge{
@@ -216,7 +232,7 @@ func TestArrivalLeavesAManualMoveAlone(t *testing.T) {
 	if err := graph.Valid(); err != nil {
 		t.Fatalf("the hand-edited graph is not a valid starting point: %v", err)
 	}
-	h.world.putGraph(graph)
+	h.world.putGraph(graph, "/acme")
 
 	h.world.meter("d3", "Drittzaehler", 100, "/acme")
 	h.world.resetCalls()
@@ -248,7 +264,7 @@ func TestArrivalLeavesAManualMoveAlone(t *testing.T) {
 // the graph valid.
 func TestDepartureRemovesTheNodeAndKeepsTheGraphValid(t *testing.T) {
 	h := acmeHarness(t)
-	h.mustFull(t)
+	seedNested(h, "/acme", "acme", "d1", "d2")
 	before := h.graphOfGroup(t, "/acme")
 	if parentOf(before, "d2") != "d1" {
 		t.Fatalf("this case needs d2 under d1, got %v", parentOf(before, "d2"))
@@ -340,7 +356,7 @@ func TestFirstGraphLeavesInactiveDevicesOut(t *testing.T) {
 // A departure and an arrival in the same pass are one write, not two.
 func TestDepartureAndArrivalInOnePassWriteOnce(t *testing.T) {
 	h := acmeHarness(t)
-	h.mustFull(t)
+	seedNested(h, "/acme", "acme", "d1", "d2")
 
 	h.world.setDeviceGroups("d2")
 	h.world.meter("d3", "Drittzaehler", 100, "/acme")
@@ -523,6 +539,8 @@ func twoGroupHarness(t *testing.T) *harness {
 // both the group the device left and the one it joined.
 func TestDeviceTriggerReconcilesTheOldAndTheNewGroup(t *testing.T) {
 	h := twoGroupHarness(t)
+	h.world.putGraph(seededGraph("/a", "a", "a", "d1"), "/a")
+	h.world.putGraph(seededGraph("/b", "b", "b", "d2"), "/b")
 	h.mustFull(t)
 
 	h.world.setDeviceGroups("d1", "/b")
@@ -600,6 +618,7 @@ func TestGraphTriggerResolvesTheGroupFromTheGraphsOwnAttribute(t *testing.T) {
 // from the graph the device was in.
 func TestDeviceTriggerForAVanishedDeviceRemovesItsNode(t *testing.T) {
 	h := acmeHarness(t)
+	seedNested(h, "/acme", "acme", "d1", "d2")
 	h.mustFull(t)
 
 	h.world.removeDevice("d2")
@@ -691,8 +710,14 @@ func TestReadOnlyPassReportsWhatItWouldWrite(t *testing.T) {
 	if change.Group.Path != "/acme" {
 		t.Errorf("expected the creation to name /acme, got %v", change.Group.Path)
 	}
-	if got := len(graphs.DeviceIdsIn(change.Graph)); got != 3 {
-		t.Errorf("expected all three devices in the reported graph, got %v", got)
+	if got := len(graphs.ThingIdsIn(change.Graph)); got != 3 {
+		t.Errorf("expected all three devices in the reported graph as meters, got %v", got)
+	}
+	if got := len(change.Meters); got != 3 {
+		t.Errorf("expected the report to know the device of each meter, got %v", change.Meters)
+	}
+	if got := h.world.countCalls("CreateThing"); got != 0 {
+		t.Errorf("a reported pass must create no thing, got %v", got)
 	}
 	if err := change.Graph.Valid(); err != nil {
 		t.Errorf("a reported graph must be one the repository would accept: %v", err)
@@ -827,7 +852,7 @@ func TestRunDrivesAnInitialPassAndPicksUpLaterTriggers(t *testing.T) {
 
 	waitFor(t, 5*time.Second, "the trigger to be worked off", func() bool {
 		graph, exists := h.world.graphOfGroup("/acme")
-		return exists && slices.Contains(nodeIds(graph), "d3")
+		return exists && slices.Contains(nodeIds(h.world.deviceView(graph)), "d3")
 	})
 }
 
@@ -959,7 +984,7 @@ func TestGraphSurvivesItsLastDeviceLeaving(t *testing.T) {
 	h := newHarness(t)
 	h.world.setGroups("/acme")
 	h.world.meter("d1", "Hauptzaehler", 1000, "/acme")
-	h.mustFull(t)
+	h.world.putGraph(seededGraph("/acme", "acme", "acme", "d1"), "/acme")
 	before := h.graphOfGroup(t, "/acme")
 
 	h.world.removeDevice("d1")
@@ -1115,5 +1140,5 @@ func mustGraph(t *testing.T, h *harness, id string) platform.Graph {
 	if !found {
 		t.Fatalf("graph %v is gone", id)
 	}
-	return graph
+	return h.world.deviceView(graph)
 }

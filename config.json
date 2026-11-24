@@ -37,6 +37,7 @@
 
   "permissions_device_topic": "devices",
   "permissions_graph_topic": "graphs",
+  "permissions_thing_topic": "things",
 
   "service_user_id": "",
 

@@ -1483,3 +1483,80 @@ func TestBuildCreatesNoCollectorWhenItIsNotNeeded(t *testing.T) {
 		t.Errorf("with the collector off the device belongs at the root, got %v", got)
 	}
 }
+
+// --- meter things ---------------------------------------------------------------
+
+// A device with an entry in Meters is placed as a thing node in the thing's id,
+// by the same heuristic, and the edges run between node ids.
+func TestBuildPlacesAMeterAsAThingNodeByTheDevicesReading(t *testing.T) {
+	opts := options(0.05)
+	opts.Meters = map[string]string{"d1": "thing-1", "d2": "thing-2"}
+	devices := []model.Device{device("d1", "Haupt", model.Electricity), device("d2", "Unter", model.Electricity)}
+	readings := readingsOf(
+		reading{"d1", model.Electricity, 1000},
+		reading{"d2", model.Electricity, 400},
+	)
+	graph, _, err := Build(owner, group, devices, readings, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustValid(t, graph)
+	byId := map[string]models.Node{}
+	for _, node := range graph.Nodes {
+		byId[node.Id] = node
+	}
+	for _, id := range []string{"thing-1", "thing-2"} {
+		node, ok := byId[id]
+		if !ok || node.ResourceType != model.ResourceTypeThing || node.ResourceId != id || len(node.Attributes) != 0 {
+			t.Errorf("expected a plain thing node %v, got %+v", id, node)
+		}
+	}
+	if _, ok := byId["d1"]; ok {
+		t.Error("the device itself must not be a node")
+	}
+	parents := map[string]string{}
+	for _, edge := range graph.Edges {
+		parents[edge.FromNodeId] = edge.ToNodeId
+	}
+	if parents["thing-1"] != model.RootNodeId || parents["thing-2"] != "thing-1" {
+		t.Errorf("expected thing-2 below thing-1 below the root, got %v", parents)
+	}
+}
+
+// Attach reads an existing thing node through the device that measures it, so
+// a graph made of meters still offers parents.
+func TestAttachUsesTheDeviceOfAThingNodeAsAParent(t *testing.T) {
+	opts := options(0.05)
+	opts.Meters = map[string]string{"d1": "thing-1"}
+	devices := []model.Device{device("d1", "Haupt", model.Electricity)}
+	graph, _, err := Build(owner, group, devices, readingsOf(reading{"d1", model.Electricity, 1000}), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attach := options(0.05)
+	attach.Meters = map[string]string{"d2": "thing-2"}
+	attach.ThingDevices = map[string]string{"thing-1": "d1"}
+	readings := readingsOf(reading{"d1", model.Electricity, 1000}, reading{"d2", model.Electricity, 300})
+	if _, err := Attach(&graph, device("d2", "Unter", model.Electricity), readings, attach); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range graph.Edges {
+		if edge.FromNodeId == "thing-2" && edge.ToNodeId != "thing-1" {
+			t.Errorf("expected the new meter below thing-1, got %v", edge.ToNodeId)
+		}
+	}
+
+	// Without the map the thing node is no candidate and the device goes to the root.
+	plain := options(0.05)
+	plain.Meters = map[string]string{"d3": "thing-3"}
+	if _, err := Attach(&graph, device("d3", "Dritt", model.Electricity),
+		readingsOf(reading{"d1", model.Electricity, 1000}, reading{"d3", model.Electricity, 100}), plain); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range graph.Edges {
+		if edge.FromNodeId == "thing-3" && edge.ToNodeId != model.RootNodeId {
+			t.Errorf("expected the root without a thing-to-device map, got %v", edge.ToNodeId)
+		}
+	}
+}

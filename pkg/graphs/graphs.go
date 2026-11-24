@@ -27,9 +27,12 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sort"
+	"time"
 
 	devicerepomodel "github.com/SENERGY-Platform/device-repository/lib/model"
 	"github.com/SENERGY-Platform/graph-provider/pkg/model"
+	"github.com/SENERGY-Platform/graph-provider/pkg/things"
 	platform "github.com/SENERGY-Platform/models/go/models"
 	permissions "github.com/SENERGY-Platform/permissions-v2/pkg/client"
 )
@@ -58,12 +61,28 @@ type Permissions interface {
 	SetPermission(token string, topicId string, id string, perms permissions.ResourcePermissions) (result permissions.ResourcePermissions, err error, code int)
 }
 
+// Things is the part of the repository's thing endpoints this package uses.
+type Things interface {
+	List(ctx context.Context, token string, ids []string, deviceIds []string) ([]things.Thing, error, int)
+	Create(ctx context.Context, token string, thing things.Thing) (things.Thing, error, int)
+	AddDeviceLink(ctx context.Context, token string, thingId string, link things.LinkCreate) (things.Thing, error, int)
+	Delete(ctx context.Context, token string, thingId string) (error, int)
+
+	EndDeviceLink(ctx context.Context, token string, thingId string, linkId string, until time.Time) (things.Thing, error, int)
+
+	// ChangeGraph writes a graph as a change at an instant, see things.Client.
+	// Here because it is the same foreign client; used for writes that remove.
+	ChangeGraph(ctx context.Context, token string, graph platform.Graph, at time.Time) (platform.Graph, error, int)
+}
+
 type Store struct {
 	repository  Repository
 	permissions Permissions
+	things      Things
 
 	token         string
 	graphTopic    string
+	thingTopic    string
 	serviceUserId string
 
 	// writable false is the kill switch. Reads still happen, writes are
@@ -71,12 +90,14 @@ type Store struct {
 	writable bool
 }
 
-func New(repository Repository, perms Permissions, token string, graphTopic string, serviceUserId string, writable bool) *Store {
+func New(repository Repository, perms Permissions, thingClient Things, token string, graphTopic string, thingTopic string, serviceUserId string, writable bool) *Store {
 	return &Store{
 		repository:    repository,
 		permissions:   perms,
+		things:        thingClient,
 		token:         token,
 		graphTopic:    graphTopic,
+		thingTopic:    thingTopic,
 		serviceUserId: serviceUserId,
 		writable:      writable,
 	}
@@ -84,6 +105,13 @@ func New(repository Repository, perms Permissions, token string, graphTopic stri
 
 // ErrReadOnly is returned instead of writing when the kill switch is set.
 var ErrReadOnly = errors.New("writing is disabled by configuration")
+
+// ErrConflict marks a write the repository answered with 409: its
+// compare-and-set lost the race against another writer five times in a row. The
+// edit is a diff against the stored graph, so nothing is wrong with it - the
+// next pass reads the graph again and applies it again. Handled like any other
+// transient write failure, only named, so the log says what happened.
+var ErrConflict = errors.New("the repository's compare-and-set lost against another writer")
 
 func (this *Store) Writable() bool {
 	return this.writable
@@ -214,7 +242,36 @@ func (this *Store) Save(ctx context.Context, graph platform.Graph) (platform.Gra
 		return graph, err
 	}
 	result, err, code := this.repository.SetGraph(this.token, graph)
+	return this.written(graph, result, err, code)
+}
+
+// SaveRemoval writes a graph from which something was removed.
+//
+// As a change at the given instant, not as a correction: a correction deletes
+// the removed node from the stored document, history included, and the
+// repository refuses it (400, naming the instant) while an ended version of an
+// edge still points at the node. A change ends the node and its edges at the
+// instant and keeps everything before it. Writes that only add stay a
+// correction without an instant, see Save.
+func (this *Store) SaveRemoval(ctx context.Context, graph platform.Graph, at time.Time) (platform.Graph, error) {
+	if err := graph.Valid(); err != nil {
+		return graph, fmt.Errorf("refusing to write an invalid graph: %w", err)
+	}
+	if !this.writable {
+		return graph, ErrReadOnly
+	}
+	if err := ctx.Err(); err != nil {
+		return graph, err
+	}
+	result, err, code := this.things.ChangeGraph(ctx, this.token, graph, at)
+	return this.written(graph, result, err, code)
+}
+
+func (this *Store) written(graph platform.Graph, result platform.Graph, err error, code int) (platform.Graph, error) {
 	if err != nil {
+		if code == http.StatusConflict {
+			return graph, fmt.Errorf("unable to write graph %v (%v): %w: %w", graph.Id, code, ErrConflict, err)
+		}
 		return graph, fmt.Errorf("unable to write graph %v (%v): %w", graph.Id, code, err)
 	}
 	return result, nil
@@ -230,7 +287,7 @@ func (this *Store) Save(ctx context.Context, graph platform.Graph) (platform.Gra
 // this service consumes itself; without the comparison that echo would ask for
 // another write and the loop would not end.
 func (this *Store) Share(ctx context.Context, graphId string, groupPath string) (changed bool, err error) {
-	return this.setGroupPermission(ctx, graphId, groupPath, &permissions.PermissionsMap{
+	return this.setGroupPermission(ctx, this.graphTopic, "graph", graphId, groupPath, &permissions.PermissionsMap{
 		Read:    true,
 		Write:   true,
 		Execute: true,
@@ -243,24 +300,41 @@ func (this *Store) Share(ctx context.Context, graphId string, groupPath string) 
 // user's work in response to a directory event is the harsher of the two
 // actions, and the graph stays usable to its owner.
 func (this *Store) Unshare(ctx context.Context, graphId string, groupPath string) (changed bool, err error) {
-	return this.setGroupPermission(ctx, graphId, groupPath, nil)
+	return this.setGroupPermission(ctx, this.graphTopic, "graph", graphId, groupPath, nil)
+}
+
+// ShareThing gives a group the same rights on a thing as on its graph: read,
+// write and execute, administrate stays with the owner. A member who may read
+// the company graph has to be able to read the meter things it points at, or
+// the graph shows nodes the member cannot resolve.
+func (this *Store) ShareThing(ctx context.Context, thingId string, groupPath string) (changed bool, err error) {
+	return this.setGroupPermission(ctx, this.thingTopic, "thing", thingId, groupPath, &permissions.PermissionsMap{
+		Read:    true,
+		Write:   true,
+		Execute: true,
+	})
+}
+
+// UnshareThing withdraws a group's access to a thing.
+func (this *Store) UnshareThing(ctx context.Context, thingId string, groupPath string) (changed bool, err error) {
+	return this.setGroupPermission(ctx, this.thingTopic, "thing", thingId, groupPath, nil)
 }
 
 // setGroupPermission writes one group's entry, or removes it when want is nil.
-func (this *Store) setGroupPermission(ctx context.Context, graphId string, groupPath string, want *permissions.PermissionsMap) (bool, error) {
+func (this *Store) setGroupPermission(ctx context.Context, topic string, noun string, graphId string, groupPath string, want *permissions.PermissionsMap) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	resource, err, code := this.permissions.GetResource(this.token, this.graphTopic, graphId)
+	resource, err, code := this.permissions.GetResource(this.token, topic, graphId)
 	if err != nil && code != http.StatusNotFound {
-		return false, fmt.Errorf("unable to read permissions of graph %v: %w", graphId, err)
+		return false, fmt.Errorf("unable to read permissions of %v %v: %w", noun, graphId, err)
 	}
 	if code == http.StatusNotFound {
 		// The graph has no permission resource, so there is nothing to share
 		// and no safe way to invent one: writing permissions requires at least
 		// one administrating user, and guessing who that is would be worse
 		// than reporting that the graph is not ready yet.
-		return false, fmt.Errorf("graph %v has no permission resource", graphId)
+		return false, fmt.Errorf("%v %v has no permission resource", noun, graphId)
 	}
 
 	next := clonePermissions(resource.ResourcePermissions)
@@ -285,14 +359,14 @@ func (this *Store) setGroupPermission(ctx context.Context, graphId string, group
 		}
 	}
 	if !next.Valid() {
-		return false, fmt.Errorf("graph %v would be left without an administrating user", graphId)
+		return false, fmt.Errorf("%v %v would be left without an administrating user", noun, graphId)
 	}
 
 	if !this.writable {
 		return false, ErrReadOnly
 	}
-	if _, err, code = this.permissions.SetPermission(this.token, this.graphTopic, graphId, next); err != nil {
-		return false, fmt.Errorf("unable to write permissions of graph %v (%v): %w", graphId, code, err)
+	if _, err, code = this.permissions.SetPermission(this.token, topic, graphId, next); err != nil {
+		return false, fmt.Errorf("unable to write permissions of %v %v (%v): %w", noun, graphId, code, err)
 	}
 	return true, nil
 }
@@ -359,8 +433,17 @@ func SetAttribute(attributes []platform.Attribute, key string, value string) []p
 //
 // Found by structure rather than by id: a user may have rebuilt the graph, and
 // the graph view itself identifies the root this way.
+//
+// A device or a thing is never the root: the model refuses either as the end
+// node, so a graph with one at the top is not one the repository would store.
+// Skipping them matters for a projection, which can be read in the middle of
+// an edit - a thing node whose parent edge has not started yet would otherwise
+// be taken for the top.
 func RootOf(graph platform.Graph) (platform.Node, bool) {
 	for _, node := range graph.Nodes {
+		if node.ResourceType == platform.GraphResourceTypeDevice || node.ResourceType == model.ResourceTypeThing {
+			continue
+		}
 		isSource := true
 		for _, edge := range graph.Edges {
 			if edge.FromNodeId == node.Id {
@@ -375,7 +458,9 @@ func RootOf(graph platform.Graph) (platform.Node, bool) {
 	return platform.Node{}, false
 }
 
-// DeviceIdsIn is every device a graph contains, by the id it points at.
+// DeviceIdsIn is every device a graph contains as a device node, by the id it
+// points at. Devices a graph reaches through meter things are not in it, they
+// need the things: see Store.Placed.
 func DeviceIdsIn(graph platform.Graph) []string {
 	result := []string{}
 	for _, node := range graph.Nodes {
@@ -385,4 +470,283 @@ func DeviceIdsIn(graph platform.Graph) []string {
 	}
 	slices.Sort(result)
 	return result
+}
+
+// ThingIdsIn is every thing a graph contains, by the id it points at.
+func ThingIdsIn(graph platform.Graph) []string {
+	result := []string{}
+	for _, node := range graph.Nodes {
+		if node.ResourceType == model.ResourceTypeThing && node.ResourceId != "" {
+			result = append(result, node.ResourceId)
+		}
+	}
+	slices.Sort(result)
+	return result
+}
+
+// Placed is where the devices of a graph are, however they got there.
+type Placed struct {
+	// DeviceIds are the devices the graph accounts for: those with a device
+	// node, and those linked through an open link to a thing with a node in the
+	// graph. Sorted.
+	DeviceIds []string
+
+	// Things are the things the graph's thing nodes point at, by id. A thing
+	// node whose thing the repository does not return is absent.
+	Things map[string]things.Thing
+
+	// ThingDevices maps a thing in the graph to the device that measures it
+	// through an open link. A thing measured by several devices at once maps to
+	// the lowest id, which is enough to read a figure from.
+	ThingDevices map[string]string
+}
+
+// Placed reads the things of a graph and answers which devices it accounts for.
+//
+// The graph read is the projection at now, so a thing node that ended is not in
+// it, and a link that ended is not counted: only a link that is open now or
+// still ahead keeps a device placed. A device with a link that ended and no
+// other place is missing and is placed again, as a new meter.
+//
+// Every kind of thing counts, not only meters. The repository refuses a graph
+// holding a thing together with a device linked to it at the same time, so a
+// device linked to a consumer thing of the graph could not be added as a device
+// node either, and trying would fail every pass.
+//
+// A graph without thing nodes costs no request.
+func (this *Store) Placed(ctx context.Context, graph platform.Graph, now time.Time) (Placed, error) {
+	result := Placed{
+		DeviceIds:    DeviceIdsIn(graph),
+		Things:       map[string]things.Thing{},
+		ThingDevices: map[string]string{},
+	}
+	thingIds := ThingIdsIn(graph)
+	if len(thingIds) == 0 {
+		return result, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	found, err, code := this.things.List(ctx, this.token, thingIds, nil)
+	if err != nil {
+		return result, fmt.Errorf("unable to read the things of graph %v (%v): %w", graph.Id, code, err)
+	}
+	seen := map[string]bool{}
+	for _, id := range result.DeviceIds {
+		seen[id] = true
+	}
+	for _, thing := range found {
+		result.Things[thing.Id] = thing
+		for _, link := range thing.DeviceLinks {
+			if !link.Open(now) {
+				continue
+			}
+			if !seen[link.DeviceId] {
+				seen[link.DeviceId] = true
+				result.DeviceIds = append(result.DeviceIds, link.DeviceId)
+			}
+			if previous, taken := result.ThingDevices[thing.Id]; !taken || link.DeviceId < previous {
+				result.ThingDevices[thing.Id] = link.DeviceId
+			}
+		}
+	}
+	slices.Sort(result.DeviceIds)
+	return result, nil
+}
+
+// Meters is how a pass placed the devices it is about to add.
+type Meters struct {
+	// ThingIds maps a device to the meter thing it is placed as. Adopted,
+	// created, or - while writing is off - a placeholder.
+	ThingIds map[string]string
+
+	// Created are the ids of the things this call created.
+	Created []string
+
+	// Plain are the devices that cannot become a meter: they are already
+	// linked to a thing this service did not make for this group, and a second
+	// open link for one device is refused. They are placed as device nodes.
+	Plain []string
+}
+
+// PlaceholderThingId is the id a planned meter carries in a dry run, where no
+// thing is created. Recognisable on purpose: nothing in a report should be
+// mistaken for an id the repository handed out.
+func PlaceholderThingId(deviceId string) string {
+	return "planned-meter-of-" + deviceId
+}
+
+// PlaceMeters gives each device a meter thing, creating what is missing.
+//
+// A device with an open link to a thing this service made for this group - a
+// meter thing, owned by the service user, carrying the group's id - is placed
+// as that thing: it is what an earlier pass left behind when it created the
+// thing and the link and then failed before the graph was written, and a
+// second thing for the same device would be refused anyway, since the periods
+// of one device may not overlap across things. A thing found this way is
+// shared again, because the earlier pass may have stopped before sharing it.
+//
+// A device with an open link to any other thing is not touched; it is
+// reported in Plain.
+//
+// Otherwise a meter thing is created, named like the device, owned like the
+// graph by the service user and marked with the group's id, and the device is
+// linked to it. The link is created with no start, which the repository reads
+// as now, no readings - they are not known when a device is first seen - and
+// no factor, which the repository reads as 1. A thing whose link cannot be
+// created is deleted again, so a failure does not leave a thing nobody links.
+//
+// With writing off nothing is created and nothing is shared: the devices get a
+// placeholder id, so a dry run can still show the graph it would write.
+func (this *Store) PlaceMeters(ctx context.Context, group model.Group, devices []model.Device, now time.Time) (Meters, error) {
+	result := Meters{ThingIds: map[string]string{}}
+	if len(devices) == 0 {
+		return result, nil
+	}
+	sorted := slices.Clone(devices)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Id < sorted[j].Id })
+	deviceIds := make([]string, len(sorted))
+	for i, device := range sorted {
+		deviceIds[i] = device.Id
+	}
+
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	linked, err, code := this.things.List(ctx, this.token, nil, deviceIds)
+	if err != nil {
+		return result, fmt.Errorf("unable to read the things of the new devices (%v): %w", code, err)
+	}
+	// Per device: the things it has an open link to, in id order.
+	openLinks := map[string][]things.Thing{}
+	for _, thing := range linked {
+		for _, link := range thing.DeviceLinks {
+			if link.Open(now) {
+				openLinks[link.DeviceId] = append(openLinks[link.DeviceId], thing)
+			}
+		}
+	}
+
+	for _, device := range sorted {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		existing := openLinks[device.Id]
+		if len(existing) > 0 {
+			if adopt, ok := this.ownMeter(existing, group); ok {
+				result.ThingIds[device.Id] = adopt.Id
+				if this.writable {
+					if _, err := this.ShareThing(ctx, adopt.Id, group.Path); err != nil {
+						return result, fmt.Errorf("unable to share meter %v of device %v: %w", adopt.Id, device.Id, err)
+					}
+				}
+				continue
+			}
+			result.Plain = append(result.Plain, device.Id)
+			continue
+		}
+		if !this.writable {
+			result.ThingIds[device.Id] = PlaceholderThingId(device.Id)
+			continue
+		}
+		thingId, err := this.createMeter(ctx, group, device)
+		if thingId != "" {
+			result.Created = append(result.Created, thingId)
+			result.ThingIds[device.Id] = thingId
+		}
+		if err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+// IsOwnMeter reports whether a thing is a meter this service made for the group:
+// kind meter, owned by the service user, carrying the group's id. Only such
+// things are ever changed by a pass; a link on any other thing is a person's.
+func (this *Store) IsOwnMeter(thing things.Thing, group model.Group) bool {
+	return thing.Kind == things.KindMeter &&
+		thing.OwnerId == this.serviceUserId &&
+		AttributeOf(thing.Attributes, model.AttrKeycloakGroupId) == group.Id
+}
+
+// EndLink ends a device's open link on a meter at an instant. The thing, its
+// node and everything measured before stay. Callers check IsOwnMeter first.
+func (this *Store) EndLink(ctx context.Context, thingId string, linkId string, at time.Time) error {
+	if !this.writable {
+		return ErrReadOnly
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err, code := this.things.EndDeviceLink(ctx, this.token, thingId, linkId, at); err != nil {
+		return fmt.Errorf("unable to end link %v of meter %v (%v): %w", linkId, thingId, code, err)
+	}
+	return nil
+}
+
+// ownMeter picks the meter thing this service made for the group from a
+// device's open links.
+func (this *Store) ownMeter(candidates []things.Thing, group model.Group) (things.Thing, bool) {
+	for _, thing := range candidates {
+		if this.IsOwnMeter(thing, group) {
+			return thing, true
+		}
+	}
+	return things.Thing{}, false
+}
+
+// createMeter creates one meter thing, links the device to it and shares it.
+// The id is returned as soon as the thing exists, even with an error after it,
+// because the next pass finds the thing by its link and adopts it.
+func (this *Store) createMeter(ctx context.Context, group model.Group, device model.Device) (string, error) {
+	name := device.Name
+	if name == "" {
+		name = device.Id
+	}
+	thing, err, code := this.things.Create(ctx, this.token, things.Thing{
+		Kind: things.KindMeter,
+		Name: name,
+		// Owned like the graph. permissions-v2 gives an owner full rights and
+		// needs at least one administrating user, which this is.
+		OwnerId: this.serviceUserId,
+		Attributes: []platform.Attribute{
+			{Key: model.AttrKeycloakGroupId, Value: group.Id, Origin: model.AttrOrigin},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("unable to create a meter for device %v (%v): %w", device.Id, code, err)
+	}
+	if _, err, code = this.things.AddDeviceLink(ctx, this.token, thing.Id, things.LinkCreate{DeviceId: device.Id}); err != nil {
+		linkErr := fmt.Errorf("unable to link device %v to its meter %v (%v): %w", device.Id, thing.Id, code, err)
+		// Best effort. A thing without a link is of no use to anybody; if the
+		// delete fails too it stays, and a later pass cannot find it by a link
+		// - which is the lesser harm against a delete retried until it works.
+		if delErr, _ := this.things.Delete(ctx, this.token, thing.Id); delErr != nil {
+			return "", errors.Join(linkErr, fmt.Errorf("the meter %v could not be removed again: %w", thing.Id, delErr))
+		}
+		return "", linkErr
+	}
+	if _, err = this.ShareThing(ctx, thing.Id, group.Path); err != nil {
+		return thing.Id, fmt.Errorf("unable to share meter %v of device %v: %w", thing.Id, device.Id, err)
+	}
+	return thing.Id, nil
+}
+
+// NodeIdentityKept checks that no node of before changed what it stands for in
+// after. The repository answers a changed resource_type or resource_id of an
+// existing node id with 400: a different resource is a different node. Nothing
+// here edits a node in place, so this is the guard that keeps it so.
+func NodeIdentityKept(before platform.Graph, after platform.Graph) error {
+	now := map[string]platform.Node{}
+	for _, node := range after.Nodes {
+		now[node.Id] = node
+	}
+	for _, node := range before.Nodes {
+		if kept, ok := now[node.Id]; ok && (kept.ResourceType != node.ResourceType || kept.ResourceId != node.ResourceId) {
+			return fmt.Errorf("node %v would change from %v %v to %v %v", node.Id,
+				node.ResourceType, node.ResourceId, kept.ResourceType, kept.ResourceId)
+		}
+	}
+	return nil
 }
