@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	devicerepomodel "github.com/SENERGY-Platform/device-repository/lib/model"
+	devicerepomodel "github.com/SENERGY-Platform/device-repository/v3/lib/model"
 	"github.com/SENERGY-Platform/graph-provider/pkg/model"
 	platform "github.com/SENERGY-Platform/models/go/models"
 	permissions "github.com/SENERGY-Platform/permissions-v2/pkg/client"
@@ -37,7 +37,7 @@ type fakeDevices struct {
 	err   error
 }
 
-func (this *fakeDevices) ListExtendedDevices(_ string, options devicerepomodel.ExtendedDeviceListOptions) ([]platform.ExtendedDevice, int64, error, int) {
+func (this *fakeDevices) ListExtendedDevices(_ context.Context, _ string, options devicerepomodel.ExtendedDeviceListOptions) ([]platform.ExtendedDevice, int64, error, int) {
 	this.calls = append(this.calls, options)
 	if this.err != nil {
 		return nil, 0, this.err, 500

@@ -17,11 +17,10 @@
 // Package things is this service's access to the things of the device
 // repository.
 //
-// A small client of its own instead of the repository's, because the pinned
-// device-repository module (v0.2.53) predates things: its client has no thing
-// endpoints and its models no Thing. Bumping it would move this service to the
-// repository's v3 module path and to a new models version for the sake of five
-// requests. The types here carry only the fields this service reads or writes.
+// A small client of its own, with only the fields this service reads or
+// writes, instead of the repository's v3 client and its models.Thing. The
+// service's Thing, Link and error handling are used across the reconciler, and
+// the five requests do not justify moving all of that onto the v3 types.
 //
 // The contract is device-repository docs/things-and-device-links.md.
 package things

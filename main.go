@@ -29,7 +29,7 @@ import (
 	"syscall"
 	"time"
 
-	devicerepo "github.com/SENERGY-Platform/device-repository/lib/client"
+	devicerepo "github.com/SENERGY-Platform/device-repository/v3/lib/client"
 	sb_config_hdl "github.com/SENERGY-Platform/go-service-base/config-hdl"
 	srv_info_hdl "github.com/SENERGY-Platform/go-service-base/srv-info-hdl"
 	struct_logger "github.com/SENERGY-Platform/go-service-base/struct-logger"
@@ -128,7 +128,7 @@ func run() int {
 	defer stop()
 	wg := &sync.WaitGroup{}
 
-	repository := devicerepo.NewClient(cfg.DeviceRepositoryUrl, nil)
+	repository := devicerepo.NewClient(cfg.DeviceRepositoryUrl, devicerepo.Options{})
 	permissionsClient := permissions.New(cfg.PermissionsV2Url)
 	keycloakClient := keycloak.New(cfg.Keycloak, time.Duration(cfg.HttpTimeout))
 

@@ -38,8 +38,8 @@ import (
 	"testing"
 	"time"
 
-	devicerepoclient "github.com/SENERGY-Platform/device-repository/lib/client"
 	devicerepo "github.com/SENERGY-Platform/device-repository/v3/lib"
+	devicerepoclient "github.com/SENERGY-Platform/device-repository/v3/lib/client"
 	devicerepoconfig "github.com/SENERGY-Platform/device-repository/v3/lib/configuration"
 	"github.com/SENERGY-Platform/device-repository/v3/lib/tests/docker"
 	"github.com/SENERGY-Platform/graph-provider/pkg/cache"
@@ -221,7 +221,7 @@ func start(t *testing.T) *stack {
 		permissionsUrl: config.PermissionsV2Url,
 		kafkaUrl:       config.KafkaUrl,
 	}
-	this.repository = devicerepoclient.NewClient(this.repositoryUrl, nil)
+	this.repository = devicerepoclient.NewClient(this.repositoryUrl, devicerepoclient.Options{})
 	this.permissions = permissions.New(this.permissionsUrl)
 
 	this.groups = &fakeGroupSource{groups: []model.Group{{Id: groupId, Path: groupPath, Name: groupName}}}
@@ -317,7 +317,7 @@ func (this *stack) waitForRepository(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(time.Minute)
 	for {
-		_, _, err, _ := this.repository.ListGraphs(this.token, devicerepoclient.GraphListOptions{Limit: 1})
+		_, _, err, _ := this.repository.ListGraphs(this.ctx, this.token, devicerepoclient.GraphListOptions{Limit: 1})
 		if err == nil {
 			return
 		}
@@ -348,7 +348,7 @@ type meter struct {
 func (this *stack) seed(t *testing.T) (deviceTypeId string, meters []meter) {
 	t.Helper()
 
-	protocol, err, code := this.repository.SetProtocol(this.token, platform.Protocol{
+	protocol, err, code := this.repository.SetProtocol(this.ctx, this.token, platform.Protocol{
 		Name:             "test-protocol",
 		Handler:          "test-protocol",
 		ProtocolSegments: []platform.ProtocolSegment{{Name: "body"}},
@@ -357,7 +357,7 @@ func (this *stack) seed(t *testing.T) (deviceTypeId string, meters []meter) {
 		t.Fatalf("unable to create a protocol (%v): %v", code, err)
 	}
 
-	_, err, code = this.repository.SetFunction(this.token, platform.Function{
+	_, err, code = this.repository.SetFunction(this.ctx, this.token, platform.Function{
 		Id:      model.CarrierFunctionId[model.Electricity],
 		Name:    "Get-Energy",
 		RdfType: "https://senergy.infai.org/ontology/MeasuringFunction",
@@ -366,7 +366,7 @@ func (this *stack) seed(t *testing.T) (deviceTypeId string, meters []meter) {
 		t.Fatalf("unable to create the energy measuring function (%v): %v", code, err)
 	}
 
-	deviceType, err, code := this.repository.SetDeviceType(this.token, platform.DeviceType{
+	deviceType, err, code := this.repository.SetDeviceType(this.ctx, this.token, platform.DeviceType{
 		Name: "electricity-meter",
 		Services: []platform.Service{{
 			Name:        "getReading",
@@ -398,7 +398,7 @@ func (this *stack) seed(t *testing.T) (deviceTypeId string, meters []meter) {
 		{name: "acme-sub", value: subConsumption},
 		{name: "acme-small", value: smallConsumption},
 	} {
-		device, err, code := this.repository.CreateDevice(this.token, platform.Device{
+		device, err, code := this.repository.CreateDevice(this.ctx, this.token, platform.Device{
 			LocalId:      seeded.name,
 			Name:         seeded.name,
 			DeviceTypeId: deviceType.Id,
@@ -479,9 +479,9 @@ type countingRepository struct {
 	writes *atomic.Int64
 }
 
-func (this countingRepository) SetGraph(token string, graph platform.Graph) (platform.Graph, error, int) {
+func (this countingRepository) SetGraph(ctx context.Context, token string, graph platform.Graph) (platform.Graph, error, int) {
 	this.writes.Add(1)
-	return this.Interface.SetGraph(token, graph)
+	return this.Interface.SetGraph(ctx, token, graph)
 }
 
 // countingPermissions is the real client with the one call that changes a

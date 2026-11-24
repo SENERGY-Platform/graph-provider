@@ -33,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	devicerepomodel "github.com/SENERGY-Platform/device-repository/lib/model"
+	devicerepomodel "github.com/SENERGY-Platform/device-repository/v3/lib/model"
 	"github.com/SENERGY-Platform/graph-provider/pkg/carrier"
 	"github.com/SENERGY-Platform/graph-provider/pkg/model"
 	platform "github.com/SENERGY-Platform/models/go/models"
@@ -48,7 +48,7 @@ const pageSize = 500
 // DeviceRepository is the part of the device repository client this package
 // uses. An interface so tests need no server.
 type DeviceRepository interface {
-	ListExtendedDevices(token string, options devicerepomodel.ExtendedDeviceListOptions) (result []platform.ExtendedDevice, total int64, err error, errCode int)
+	ListExtendedDevices(ctx context.Context, token string, options devicerepomodel.ExtendedDeviceListOptions) (result []platform.ExtendedDevice, total int64, err error, errCode int)
 }
 
 // Permissions is the part of the permissions-v2 client this package uses.
@@ -156,7 +156,7 @@ func (this *Cache) RefreshDevices(ctx context.Context) error {
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		page, _, err, _ := this.devices.ListExtendedDevices(this.token, devicerepomodel.ExtendedDeviceListOptions{
+		page, _, err, _ := this.devices.ListExtendedDevices(ctx, this.token, devicerepomodel.ExtendedDeviceListOptions{
 			Limit:  pageSize,
 			Offset: offset,
 			FullDt: true,
@@ -228,7 +228,7 @@ func (this *Cache) RefreshDevice(ctx context.Context, id string) (DeviceChange, 
 	}
 	this.mux.RUnlock()
 
-	page, _, err, _ := this.devices.ListExtendedDevices(this.token, devicerepomodel.ExtendedDeviceListOptions{
+	page, _, err, _ := this.devices.ListExtendedDevices(ctx, this.token, devicerepomodel.ExtendedDeviceListOptions{
 		Ids:    []string{id},
 		FullDt: true,
 	})

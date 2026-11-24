@@ -10,8 +10,6 @@ github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERo
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/SENERGY-Platform/developer-notifications v0.0.6 h1:sUr3n5YTs3zTYKSEi4N3iXonWYiDP+Ll6yn6z1FxMRY=
 github.com/SENERGY-Platform/developer-notifications v0.0.6/go.mod h1:DwfWoj00UUN4v9fCi60frXbFycFUIIvXeKzmABcgHK8=
-github.com/SENERGY-Platform/device-repository v0.2.53 h1:KMXrOAxvnsm7/rYkcKaYUmqKcxsJa9CpFoI7L6aEI2M=
-github.com/SENERGY-Platform/device-repository v0.2.53/go.mod h1:spl0q/hV2pIR5jJqa0/lp1wS+cNLzJebPl5p9l/dJ2o=
 github.com/SENERGY-Platform/device-repository/v3 v3.14.0 h1:2NHnKR8hNzSPQ8Hq988M0eV3SopB/3I6GtrO8VTQZRQ=
 github.com/SENERGY-Platform/device-repository/v3 v3.14.0/go.mod h1:PV/04ONt7QFYVtfCGdXds6+AqdUATWeZ/au/2a274hM=
 github.com/SENERGY-Platform/gin-middleware v0.14.4 h1:LFII/7XUNmZb9H5fDPZ5BGG2x5cE00DaucfkeUX51Co=

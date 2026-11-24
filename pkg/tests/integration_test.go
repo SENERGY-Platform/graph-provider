@@ -40,7 +40,7 @@ import (
 	"slices"
 	"testing"
 
-	devicerepoclient "github.com/SENERGY-Platform/device-repository/lib/client"
+	devicerepoclient "github.com/SENERGY-Platform/device-repository/v3/lib/client"
 	"github.com/SENERGY-Platform/graph-provider/pkg/carrier"
 	"github.com/SENERGY-Platform/graph-provider/pkg/graphs"
 	"github.com/SENERGY-Platform/graph-provider/pkg/model"
@@ -189,7 +189,7 @@ func TestAgainstTheRealPlatform(t *testing.T) {
 			if err := graph.Valid(); err != nil {
 				t.Fatalf("the edited graph is invalid before it is written: %v", err)
 			}
-			if _, err, code := world.repository.SetGraph(world.token, graph); err != nil {
+			if _, err, code := world.repository.SetGraph(world.ctx, world.token, graph); err != nil {
 				t.Fatalf("unable to write the user's edit (%v): %v", code, err)
 			}
 
@@ -296,7 +296,7 @@ func TestAgainstTheRealPlatform(t *testing.T) {
 			// no longer JSON. An Origin on the filter is what makes the
 			// client take that path. pkg/graphs avoids it for this reason;
 			// if it works, that reason is gone.
-			_, _, err, code := world.repository.ListGraphs(world.token, devicerepoclient.GraphListOptions{
+			_, _, err, code := world.repository.ListGraphs(world.ctx, world.token, devicerepoclient.GraphListOptions{
 				Limit: 100,
 				Attributes: []platform.Attribute{
 					{Key: model.AttrKeycloakGroup, Origin: model.AttrOrigin},
@@ -357,7 +357,7 @@ func TestAgainstTheRealPlatform(t *testing.T) {
 			// Without this, deriving a device's carriers costs one request
 			// per device, and pkg/cache would be quietly wrong instead of
 			// slow: a device with no columns is attached to the root.
-			withDt, _, err, code := world.repository.ListExtendedDevices(world.token, devicerepoclient.ExtendedDeviceListOptions{
+			withDt, _, err, code := world.repository.ListExtendedDevices(world.ctx, world.token, devicerepoclient.ExtendedDeviceListOptions{
 				Ids:    []string{main.id},
 				FullDt: true,
 			})
@@ -382,7 +382,7 @@ func TestAgainstTheRealPlatform(t *testing.T) {
 				t.Errorf("carrier columns derived from the shipped device type are %v, want %v", columns, want)
 			}
 
-			withoutDt, _, err, code := world.repository.ListExtendedDevices(world.token, devicerepoclient.ExtendedDeviceListOptions{
+			withoutDt, _, err, code := world.repository.ListExtendedDevices(world.ctx, world.token, devicerepoclient.ExtendedDeviceListOptions{
 				Ids: []string{main.id},
 			})
 			if err != nil || len(withoutDt) != 1 {
@@ -398,7 +398,7 @@ func TestAgainstTheRealPlatform(t *testing.T) {
 			// bypass did not apply, a company's devices would silently drop
 			// out of its graph whenever somebody took the service's rights
 			// away - and the service would report itself healthy.
-			device, err, code := world.repository.CreateDevice(world.token, platform.Device{
+			device, err, code := world.repository.CreateDevice(world.ctx, world.token, platform.Device{
 				LocalId:      "foreign-meter",
 				Name:         "foreign-meter",
 				DeviceTypeId: deviceTypeId,
@@ -536,7 +536,7 @@ func assertSameSet(t *testing.T, what string, got []string, want []string) {
 
 func (this *stack) mustSetGraph(t *testing.T, graph platform.Graph) platform.Graph {
 	t.Helper()
-	result, err, code := this.repository.SetGraph(this.token, graph)
+	result, err, code := this.repository.SetGraph(this.ctx, this.token, graph)
 	if err != nil {
 		t.Fatalf("unable to write a graph (%v): %v", code, err)
 	}
@@ -545,7 +545,7 @@ func (this *stack) mustSetGraph(t *testing.T, graph platform.Graph) platform.Gra
 
 func (this *stack) listGraphIds(t *testing.T, options devicerepoclient.GraphListOptions) []string {
 	t.Helper()
-	page, _, err, code := this.repository.ListGraphs(this.token, options)
+	page, _, err, code := this.repository.ListGraphs(this.ctx, this.token, options)
 	if err != nil {
 		t.Fatalf("unable to list graphs (%v): %v", code, err)
 	}
@@ -558,7 +558,7 @@ func (this *stack) listGraphIds(t *testing.T, options devicerepoclient.GraphList
 
 func (this *stack) listDeviceIds(t *testing.T, limit int64, offset int64) []string {
 	t.Helper()
-	page, _, err, code := this.repository.ListExtendedDevices(this.token, devicerepoclient.ExtendedDeviceListOptions{
+	page, _, err, code := this.repository.ListExtendedDevices(this.ctx, this.token, devicerepoclient.ExtendedDeviceListOptions{
 		Limit:  limit,
 		Offset: offset,
 		FullDt: true,

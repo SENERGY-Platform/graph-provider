@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	devicerepomodel "github.com/SENERGY-Platform/device-repository/lib/model"
+	devicerepomodel "github.com/SENERGY-Platform/device-repository/v3/lib/model"
 	"github.com/SENERGY-Platform/graph-provider/pkg/cache"
 	"github.com/SENERGY-Platform/graph-provider/pkg/events"
 	"github.com/SENERGY-Platform/graph-provider/pkg/graphs"
@@ -385,7 +385,7 @@ type fakeRepository struct {
 	w *world
 }
 
-func (this *fakeRepository) ListExtendedDevices(_ string, options devicerepomodel.ExtendedDeviceListOptions) ([]platform.ExtendedDevice, int64, error, int) {
+func (this *fakeRepository) ListExtendedDevices(_ context.Context, _ string, options devicerepomodel.ExtendedDeviceListOptions) ([]platform.ExtendedDevice, int64, error, int) {
 	this.w.mu.Lock()
 	defer this.w.mu.Unlock()
 	this.w.record("ListExtendedDevices")
@@ -408,7 +408,7 @@ func (this *fakeRepository) ListExtendedDevices(_ string, options devicerepomode
 	return page(all, options.Offset, options.Limit), int64(len(all)), nil, http.StatusOK
 }
 
-func (this *fakeRepository) ListGraphs(_ string, options devicerepomodel.GraphListOptions) ([]platform.Graph, int64, error, int) {
+func (this *fakeRepository) ListGraphs(_ context.Context, _ string, options devicerepomodel.GraphListOptions) ([]platform.Graph, int64, error, int) {
 	this.w.mu.Lock()
 	defer this.w.mu.Unlock()
 	this.w.record("ListGraphs")
@@ -448,7 +448,7 @@ func (this *fakeRepository) ListGraphs(_ string, options devicerepomodel.GraphLi
 	return page(matching, options.Offset, options.Limit), int64(len(matching)), nil, http.StatusOK
 }
 
-func (this *fakeRepository) SetGraph(_ string, graph platform.Graph) (platform.Graph, error, int) {
+func (this *fakeRepository) SetGraph(_ context.Context, _ string, graph platform.Graph) (platform.Graph, error, int) {
 	this.w.mu.Lock()
 	defer this.w.mu.Unlock()
 	this.w.record("SetGraph")

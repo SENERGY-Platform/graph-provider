@@ -30,7 +30,7 @@ import (
 	"sort"
 	"time"
 
-	devicerepomodel "github.com/SENERGY-Platform/device-repository/lib/model"
+	devicerepomodel "github.com/SENERGY-Platform/device-repository/v3/lib/model"
 	"github.com/SENERGY-Platform/graph-provider/pkg/model"
 	"github.com/SENERGY-Platform/graph-provider/pkg/things"
 	platform "github.com/SENERGY-Platform/models/go/models"
@@ -51,8 +51,8 @@ const pageSize = 500
 // CheckTopicDefaultPermissionContext, so every check passes for this service's
 // token. The conclusion stood for the wrong reason.)
 type Repository interface {
-	ListGraphs(token string, options devicerepomodel.GraphListOptions) (result []platform.Graph, total int64, err error, errCode int)
-	SetGraph(token string, graph platform.Graph) (result platform.Graph, err error, code int)
+	ListGraphs(ctx context.Context, token string, options devicerepomodel.GraphListOptions) (result []platform.Graph, total int64, err error, errCode int)
+	SetGraph(ctx context.Context, token string, graph platform.Graph) (result platform.Graph, err error, code int)
 }
 
 // Permissions is the part of the permissions-v2 client this package uses.
@@ -173,7 +173,7 @@ func (this *Store) collect(ctx context.Context, attributeKey string, result Defa
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		page, _, err, _ := this.repository.ListGraphs(this.token, devicerepomodel.GraphListOptions{
+		page, _, err, _ := this.repository.ListGraphs(ctx, this.token, devicerepomodel.GraphListOptions{
 			Limit:      pageSize,
 			Offset:     offset,
 			SortBy:     "id.asc",
@@ -215,7 +215,7 @@ func (this *Store) Get(ctx context.Context, id string) (platform.Graph, bool, er
 	if err := ctx.Err(); err != nil {
 		return platform.Graph{}, false, err
 	}
-	page, _, err, _ := this.repository.ListGraphs(this.token, devicerepomodel.GraphListOptions{
+	page, _, err, _ := this.repository.ListGraphs(ctx, this.token, devicerepomodel.GraphListOptions{
 		Ids: []string{id},
 	})
 	if err != nil {
@@ -241,7 +241,7 @@ func (this *Store) Save(ctx context.Context, graph platform.Graph) (platform.Gra
 	if err := ctx.Err(); err != nil {
 		return graph, err
 	}
-	result, err, code := this.repository.SetGraph(this.token, graph)
+	result, err, code := this.repository.SetGraph(ctx, this.token, graph)
 	return this.written(graph, result, err, code)
 }
 

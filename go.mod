@@ -3,7 +3,6 @@ module github.com/SENERGY-Platform/graph-provider
 go 1.26.7
 
 require (
-	github.com/SENERGY-Platform/device-repository v0.2.53
 	github.com/SENERGY-Platform/device-repository/v3 v3.14.0
 	github.com/SENERGY-Platform/gin-middleware v0.14.4
 	github.com/SENERGY-Platform/go-service-base/config-hdl v1.2.0

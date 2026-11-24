@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	devicerepomodel "github.com/SENERGY-Platform/device-repository/lib/model"
+	devicerepomodel "github.com/SENERGY-Platform/device-repository/v3/lib/model"
 	"github.com/SENERGY-Platform/graph-provider/pkg/model"
 	"github.com/SENERGY-Platform/graph-provider/pkg/things"
 	platform "github.com/SENERGY-Platform/models/go/models"
@@ -45,7 +45,7 @@ type fakeRepository struct {
 	err    error
 }
 
-func (this *fakeRepository) ListGraphs(_ string, options devicerepomodel.GraphListOptions) ([]platform.Graph, int64, error, int) {
+func (this *fakeRepository) ListGraphs(_ context.Context, _ string, options devicerepomodel.GraphListOptions) ([]platform.Graph, int64, error, int) {
 	this.calls = append(this.calls, options)
 	if this.err != nil {
 		return nil, 0, this.err, 500
@@ -79,7 +79,7 @@ func (this *fakeRepository) ListGraphs(_ string, options devicerepomodel.GraphLi
 	return matching[start:end], int64(len(matching)), nil, 200
 }
 
-func (this *fakeRepository) SetGraph(_ string, graph platform.Graph) (platform.Graph, error, int) {
+func (this *fakeRepository) SetGraph(_ context.Context, _ string, graph platform.Graph) (platform.Graph, error, int) {
 	if this.err != nil {
 		return graph, this.err, 500
 	}
@@ -616,6 +616,6 @@ func TestSaveNamesAConflict(t *testing.T) {
 
 type conflictRepository struct{ fakeRepository }
 
-func (this *conflictRepository) SetGraph(_ string, graph platform.Graph) (platform.Graph, error, int) {
+func (this *conflictRepository) SetGraph(_ context.Context, _ string, graph platform.Graph) (platform.Graph, error, int) {
 	return graph, errors.New("revision changed"), http.StatusConflict
 }
